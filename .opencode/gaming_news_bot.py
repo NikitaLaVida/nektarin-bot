@@ -324,6 +324,7 @@ PLATFORMS = ["PS5", "PS4", "Xbox Series", "Xbox", "Switch", "PC", "Steam"]
 
 TG_API = "https://api.telegram.org/bot"
 MODERATION_TTL = 86400  # 24h before dropping unapproved post
+MODERATION_INTERVAL = 3600  # 1h between sending new previews
 _PROXY_FILE = os.path.join(os.path.dirname(STATE_FILE), "bot_proxy.txt")
 TG_PROXY = os.environ.get("TG_PROXY", "")
 if not TG_PROXY and os.path.exists(_PROXY_FILE):
@@ -2658,52 +2659,57 @@ def main():
             else:
                 print(f"  Waiting for approval: {pending.get('title', '?')[:60]}")
     else:
-        # No pending — send best unseen to admin for moderation
-        best = None
-        for item in unseen[:1]:
-            best = item
-            break
-        if best:
-            best["game"] = best.get("_game") or extract_game(best["title"])
-            cap = make_caption(best["title"], best.get("desc", ""), best["link"], best["game"])
-            preview = f"\u23F3 **Пре-вью**\n\n{cap}\n\n_Напиши комментарий к этому посту — он пойдёт в канал_"
-            img_url = find_post_image(best)
-            if img_url:
-                try:
-                    resp = requests.get(img_url, timeout=8, headers={"User-Agent": "Mozilla/5.0"})
-                    if resp.status_code == 200 and is_hd(resp.content):
-                        r = tg("sendPhoto", data={
-                            "chat_id": ADMIN_CHAT_ID, "caption": preview, "parse_mode": "Markdown",
-                        }, files={"photo": ("preview.jpg", resp.content, "image/jpeg")}, timeout=15)
-                    else:
+        # No pending — send best unseen to admin for moderation (max once per hour)
+        last_sent = state.get("last_moderation_sent", 0)
+        if time.time() - last_sent < MODERATION_INTERVAL:
+            print(f"  Moderation cooldown ({MODERATION_INTERVAL}s), next preview in {int(MODERATION_INTERVAL - (time.time() - last_sent))}s")
+        else:
+            best = None
+            for item in unseen[:1]:
+                best = item
+                break
+            if best:
+                best["game"] = best.get("_game") or extract_game(best["title"])
+                cap = make_caption(best["title"], best.get("desc", ""), best["link"], best["game"])
+                preview = f"\u23F3 **Пре-вью**\n\n{cap}\n\n_Напиши комментарий к этому посту — он пойдёт в канал_"
+                img_url = find_post_image(best)
+                if img_url:
+                    try:
+                        resp = requests.get(img_url, timeout=8, headers={"User-Agent": "Mozilla/5.0"})
+                        if resp.status_code == 200 and is_hd(resp.content):
+                            r = tg("sendPhoto", data={
+                                "chat_id": ADMIN_CHAT_ID, "caption": preview, "parse_mode": "Markdown",
+                            }, files={"photo": ("preview.jpg", resp.content, "image/jpeg")}, timeout=15)
+                        else:
+                            r = None
+                    except Exception:
                         r = None
-                except Exception:
+                else:
                     r = None
-            else:
-                r = None
-            if r is None:
-                r = tg("sendMessage", json={
-                    "chat_id": ADMIN_CHAT_ID, "text": preview, "parse_mode": "Markdown",
-                }, timeout=10)
-            if r:
-                msg_id = r.json()["result"]["message_id"]
-                state["pending_moderation"] = {
-                    "msg_id": msg_id,
-                    "title": best["title"],
-                    "desc": best.get("desc", ""),
-                    "link": best["link"],
-                    "caption": cap,
-                    "img_url": img_url,
-                    "youtube_url": best.get("youtube_url"),
-                    "id": best["id"],
-                    "content_hash": best["content_hash"],
-                    "source": best["source"],
-                    "game": best["game"],
-                    "time": time.time(),
-                }
-                print(f"  Sent for moderation: {best['title'][:60]}")
-                ids[best["id"]] = True
-                content_hashes[str(best["content_hash"])] = True
+                if r is None:
+                    r = tg("sendMessage", json={
+                        "chat_id": ADMIN_CHAT_ID, "text": preview, "parse_mode": "Markdown",
+                    }, timeout=10)
+                if r:
+                    msg_id = r.json()["result"]["message_id"]
+                    state["pending_moderation"] = {
+                        "msg_id": msg_id,
+                        "title": best["title"],
+                        "desc": best.get("desc", ""),
+                        "link": best["link"],
+                        "caption": cap,
+                        "img_url": img_url,
+                        "youtube_url": best.get("youtube_url"),
+                        "id": best["id"],
+                        "content_hash": best["content_hash"],
+                        "source": best["source"],
+                        "game": best["game"],
+                        "time": time.time(),
+                    }
+                    state["last_moderation_sent"] = time.time()
+                    print(f"  Sent for moderation: {best['title'][:60]}")
+                    ids[best["id"]] = True
+                    content_hashes[str(best["content_hash"])] = True
 
     # --- Daily digest ---
     last_digest = state.get("last_digest", "")
@@ -2764,7 +2770,7 @@ def main():
         state["deals_posted"] = {k: v for k, v in sorted_dp[:100]}
 
     state["ids"] = ids
-    keep_keys = {"ids", "stream_live_posted", "last_digest", "posted_msgs", "deals_posted", "features_posted", "watched_alerted", "nikita_posted", "anime_posted", "rock_posted", "last_deals_date", "content_hashes", "comment_offset", "_bot_id", "listener_track"}
+    keep_keys = {"ids", "stream_live_posted", "last_digest", "posted_msgs", "deals_posted", "features_posted", "watched_alerted", "nikita_posted", "anime_posted", "rock_posted", "last_deals_date", "content_hashes", "comment_offset", "_bot_id", "listener_track", "last_moderation_sent"}
     for k in list(state.keys()):
         if k not in keep_keys:
             del state[k]
