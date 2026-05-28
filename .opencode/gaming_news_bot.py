@@ -351,6 +351,8 @@ if not TG_PROXY and os.path.exists(_PROXY_FILE):
 MAX_CAPTION_LEN = 900
 MAX_DESC_LEN = 250
 SHORTEN_FALLBACK = 200
+MAX_IMAGE_SIZE = 10 * 1024 * 1024  # 10MB max for downloaded images
+MAX_RSS_TEXT_LEN = 2000  # max chars from RSS per field
 
 WATCHED_GAMES = [
     "elden ring", "witcher", "gta", "cyberpunk",
@@ -360,13 +362,30 @@ WATCHED_GAMES = [
     "starfield", "stalker", "fallout",
 ]
 
+_IMAGE_SIGNATURES = {
+    b"\x89PNG": ("png", "image/png"),
+    b"\xff\xd8": ("jpg", "image/jpeg"),
+    b"GIF8": ("gif", "image/gif"),
+    b"RIFF": ("webp", "image/webp"),
+    b"BM": ("bmp", "image/bmp"),
+}
+
+def detect_image_type(data):
+    for sig, (ext, mime) in _IMAGE_SIGNATURES.items():
+        if data[:len(sig)] == sig:
+            return ext, mime
+    return "jpg", "image/jpeg"
+
 IS_SAFE_URL_CACHE = {}
+SAFE_URL_CACHE_MAX = 200
 
 def is_safe_url(url):
     if not url:
         return False
     if url in IS_SAFE_URL_CACHE:
         return IS_SAFE_URL_CACHE[url]
+    if len(IS_SAFE_URL_CACHE) >= SAFE_URL_CACHE_MAX:
+        IS_SAFE_URL_CACHE.clear()
     import urllib.parse
     host = urllib.parse.urlparse(url).hostname
     if not host:
@@ -380,6 +399,34 @@ def is_safe_url(url):
         safe = False
     IS_SAFE_URL_CACHE[url] = safe
     return safe
+
+
+def safe_download_image(url, timeout=10, max_size=MAX_IMAGE_SIZE):
+    if not is_safe_url(url):
+        return None
+    try:
+        resp = requests.get(url, stream=True, timeout=timeout, headers={"User-Agent": "Mozilla/5.0"})
+        if resp.status_code != 200:
+            return None
+        size = 0
+        chunks = []
+        for chunk in resp.iter_content(chunk_size=65536):
+            chunks.append(chunk)
+            size += len(chunk)
+            if size > max_size:
+                print(f"  Image too large ({size} bytes), skipping")
+                return None
+        content = b"".join(chunks)
+        return content
+    except Exception as e:
+        print(f"  Image download err: {e}")
+        return None
+
+
+def safe_rss_text(text, max_len=MAX_RSS_TEXT_LEN):
+    text = str(text)[:max_len]
+    text = text.replace("\x00", "")
+    return text
 
 CHANNEL_SIGNATURE = _CFG.get("channel_signature", "\n— @NektarinGaming")
 
@@ -601,6 +648,8 @@ def clean(text):
     text = unescape(text or "")
     text = re.sub(r"<[^>]+>", "", text)
     text = re.sub(r"\s+", " ", text).strip()
+    text = text[:MAX_RSS_TEXT_LEN]
+    text = text.replace("\x00", "")
     return text
 
 def is_hot(item):
@@ -1285,8 +1334,8 @@ def find_post_image(item):
     rss_img = item.get("rss_img")
     if rss_img and is_safe_url(rss_img):
         try:
-            resp = requests.get(rss_img, timeout=5, headers={"User-Agent": "Mozilla/5.0"})
-            if resp.status_code == 200 and is_hd(resp.content):
+            img_bytes = safe_download_image(rss_img, timeout=5)
+            if img_bytes and is_hd(img_bytes):
                 return rss_img
         except Exception:
             pass
@@ -1322,21 +1371,12 @@ def send_post(title, desc, link, img_url, youtube_url=None, game=None, custom_ca
             print(f"  Trailer err: {e}")
 
     # Normal image
-    if img_url and is_safe_url(img_url):
+    if img_url:
         try:
-            img_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-            img_data = requests.get(img_url, headers=img_headers, timeout=10)
-            if img_data.status_code == 200 and is_hd(img_data.content):
-                ct = img_data.headers.get("content-type", "").lower()
-                if "png" in ct:
-                    ext, mime = "png", "image/png"
-                elif "webp" in ct:
-                    ext, mime = "webp", "image/webp"
-                elif "gif" in ct:
-                    ext, mime = "gif", "image/gif"
-                else:
-                    ext, mime = "jpg", "image/jpeg"
-                files = {"photo": (f"image.{ext}", img_data.content, mime)}
+            img_bytes = safe_download_image(img_url, timeout=10)
+            if img_bytes and is_hd(img_bytes):
+                img_ext, img_mime = detect_image_type(img_bytes)
+                files = {"photo": (f"image.{img_ext}", img_bytes, img_mime)}
                 payload = {
                     "chat_id": CHANNEL_ID,
                     "caption": caption,
@@ -1820,13 +1860,14 @@ def post_anime_news(state):
 
     caption = anime_caption(title, desc, link)
     msg_id = None
-    if img and is_safe_url(img):
+    if img:
         try:
-            img_data = requests.get(img, timeout=8)
-            if img_data.status_code == 200 and is_hd(img_data.content):
+            img_bytes = safe_download_image(img, timeout=8)
+            if img_bytes and is_hd(img_bytes):
+                ext, mime = detect_image_type(img_bytes)
                 r = tg("sendPhoto", data={
                     "chat_id": CHANNEL_ID, "caption": caption, "parse_mode": "Markdown",
-                }, files={"photo": ("anime.jpg", img_data.content, "image/jpeg")}, timeout=15)
+                }, files={"photo": (f"anime.{ext}", img_bytes, mime)}, timeout=15)
                 if r:
                     msg_id = r.json()["result"]["message_id"]
         except Exception:
@@ -2001,28 +2042,29 @@ def post_rock_news(state):
                 # Album cover first
                 if album_name:
                     cover_url = album_cover_url(artist, album_name)
-                    if cover_url and is_safe_url(cover_url):
+                    if cover_url:
                         try:
-                            resp = requests.get(cover_url, timeout=8)
-                            if resp.status_code == 200 and is_hd(resp.content):
-                                caption_photo = resp.content
+                            cover_bytes = safe_download_image(cover_url, timeout=8)
+                            if cover_bytes and is_hd(cover_bytes):
+                                caption_photo = cover_bytes
                         except Exception:
                             pass
 
                 # Fallback to RSS image
-                if not caption_photo and img and is_safe_url(img):
+                if not caption_photo and img:
                     try:
-                        img_data = requests.get(img, timeout=8)
-                        if img_data.status_code == 200 and is_hd(img_data.content):
-                            caption_photo = img_data.content
+                        img_bytes = safe_download_image(img, timeout=8)
+                        if img_bytes and is_hd(img_bytes):
+                            caption_photo = img_bytes
                     except Exception:
                         pass
 
                 msg_id = None
                 if caption_photo:
+                    ext, mime = detect_image_type(caption_photo)
                     r = tg("sendPhoto", data={
                         "chat_id": CHANNEL_ID, "caption": caption, "parse_mode": "Markdown",
-                    }, files={"photo": ("rock.jpg", caption_photo, "image/jpeg")}, timeout=15)
+                    }, files={"photo": (f"rock.{ext}", caption_photo, mime)}, timeout=15)
                     if r:
                         msg_id = r.json()["result"]["message_id"]
                 if not msg_id:
@@ -2398,6 +2440,21 @@ def main():
 
     state = load_state()
     ids = state.get("ids", {})
+
+    # --- Cleanup temp audio files from previous runs ---
+    tmpdir = os.path.join(os.path.dirname(STATE_FILE), "audio_tmp")
+    if os.path.exists(tmpdir):
+        try:
+            for fname in os.listdir(tmpdir):
+                fpath = os.path.join(tmpdir, fname)
+                try:
+                    if os.path.isfile(fpath):
+                        os.remove(fpath)
+                except Exception:
+                    pass
+            print(f"  Cleaned up audio_tmp/")
+        except Exception:
+            pass
 
     # --- Twitch live check ---
     print("Checking Twitch...")
