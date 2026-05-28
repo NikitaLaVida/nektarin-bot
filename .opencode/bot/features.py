@@ -343,7 +343,8 @@ def post_anime_news(state):
     candidates = []
     for url, source, limit in ANIME_FEEDS:
         try:
-            feed = feedparser.parse(url)
+            resp = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+            feed = feedparser.parse(resp.content)
             for entry in feed.entries[:limit + 10]:
                 raw_title = entry.get("title", "")
                 title = clean(raw_title)
@@ -727,7 +728,8 @@ def fetch_news():
     for url, source, limit in RSS_FEEDS:
         print(f"Loading: {url}")
         try:
-            feed = feedparser.parse(url)
+            resp = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+            feed = feedparser.parse(resp.content)
             for entry in feed.entries[:limit]:
                 raw_desc = entry.get("description", "") or ""
                 title = clean(entry.get("title", ""))

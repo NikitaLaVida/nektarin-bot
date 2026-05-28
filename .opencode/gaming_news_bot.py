@@ -179,10 +179,12 @@ def main():
             print(f"  Watched alert err: {e}")
 
     # Anime & rock auto-post by time
-    if now_h == 14:
+    if 14 <= now_h <= 16:
         post_anime_news(state)
     if now_h in (12, 15, 18):
         post_rock_news(state)
+
+    save_state(state)
 
     # Fetch & score news
     raw = fetch_news()
