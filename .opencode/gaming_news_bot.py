@@ -7,7 +7,7 @@ import requests
 from datetime import datetime, timezone
 
 from bot.config import (
-    STATE_FILE, LOG_FILE, CHANNEL_ID, CHANNEL_SIGNATURE, ADMIN_CHAT,
+    STATE_FILE, LOG_FILE, CHANNEL_ID, CHANNEL_SIGNATURE,
     ADMIN_CHAT_ID, SILENT_HOURS, MODERATION_INTERVAL,
     MODERATION_TTL, set_global_state, WATCHED_GAMES,
 )
@@ -113,12 +113,7 @@ def main():
     now_h = time.localtime().tm_hour
     now_wday = time.localtime().tm_wday
     today = time.strftime("%Y-%m-%d")
-
-    if now_h in SILENT_HOURS:
-        print(f"Night mode ({now_h}:00 — {max(SILENT_HOURS)+1}:00), skipping news")
-        save_state(state)
-        _release_lock()
-        return
+    is_daytime = now_h not in SILENT_HOURS
 
     posted = 0
 
@@ -141,9 +136,10 @@ def main():
         print(f"  New free games: {len(new_free)}")
         new_epic = [g for g in epic_free if g["title"] in {x["title"] for x in new_free}]
         new_gog = [g for g in gog_free if g["title"] in {x["title"] for x in new_free}]
-        deal_msg = send_deals_batch([], new_epic, new_gog)
-        if deal_msg:
-            posted += 1
+        if is_daytime:
+            deal_msg = send_deals_batch([], new_epic, new_gog)
+            if deal_msg:
+                posted += 1
         new_ids = {g["title"] for g in new_free}
         epic_free = [g for g in epic_free if g["title"] not in new_ids]
         gog_free = [g for g in gog_free if g["title"] not in new_ids]
@@ -151,7 +147,7 @@ def main():
     if today != deals_date:
         state["last_deals_date"] = today
         has_deals = steam_deals or epic_free or gog_free
-        if has_deals:
+        if has_deals and is_daytime:
             deal_msg = send_deals_batch(steam_deals, epic_free, gog_free)
             if deal_msg:
                 posted += 1
@@ -175,7 +171,7 @@ def main():
         text = "\n".join(lines)
         try:
             r = tg("sendMessage", json={
-                "chat_id": ADMIN_CHAT,
+                "chat_id": ADMIN_CHAT_ID,
                 "text": text, "parse_mode": "Markdown",
                 "disable_web_page_preview": False,
             }, timeout=8)
@@ -184,10 +180,11 @@ def main():
             print(f"  Watched alert err: {e}")
 
     # Anime & rock auto-post by time
-    if 14 <= now_h <= 16:
-        post_anime_news(state)
-    if now_h in (12, 15, 18):
-        post_rock_news(state)
+    if is_daytime:
+        if 14 <= now_h <= 16:
+            post_anime_news(state)
+        if now_h in (12, 15, 18):
+            post_rock_news(state)
 
     save_state(state)
 
@@ -296,7 +293,7 @@ def main():
             img = find_post_image(best)
             preview_text = f"\U0001F514 **Пре-модерация**\n\n{caption}"
             r = tg("sendMessage", json={
-                "chat_id": ADMIN_CHAT,
+                "chat_id": ADMIN_CHAT_ID,
                 "text": preview_text,
                 "parse_mode": "Markdown",
             }, timeout=10)
@@ -422,7 +419,7 @@ def force_moderation(count=3):
         img = find_post_image(best)
         preview_text = f"\U0001F514 **Пре-модерация**\n\n{caption}"
         r = tg("sendMessage", json={
-            "chat_id": ADMIN_CHAT,
+            "chat_id": ADMIN_CHAT_ID,
             "text": preview_text,
             "parse_mode": "Markdown",
         }, timeout=10)
@@ -477,7 +474,7 @@ if __name__ == "__main__":
                     bot_token = _get_token()
                     if bot_token:
                         requests.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json={
-                            "chat_id": ADMIN_CHAT,
+                            "chat_id": ADMIN_CHAT_ID,
                             "text": f"\u26A0 Daemon error:\n\n{str(e)[:200]}",
                         }, timeout=8)
                 except Exception:
@@ -501,7 +498,7 @@ if __name__ == "__main__":
                 bot_token = _get_token()
                 if bot_token:
                     requests.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json={
-                        "chat_id": ADMIN_CHAT,
+                        "chat_id": ADMIN_CHAT_ID,
                         "text": f"\U0001F4A5 Bot crashed:\n\n{str(e)[:200]}",
                     }, timeout=8)
             except Exception:

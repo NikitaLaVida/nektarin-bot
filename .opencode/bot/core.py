@@ -251,7 +251,7 @@ def check_user_reply(state, reply_to_msg_id):
 def send_error(msg):
     try:
         tg("sendMessage", json={
-            "chat_id": ADMIN_CHAT,
+            "chat_id": ADMIN_CHAT_ID,
             "text": f"\U0001F6A8 **Bot Error**\n\n{msg[:500]}",
             "parse_mode": "Markdown",
         }, timeout=8)
