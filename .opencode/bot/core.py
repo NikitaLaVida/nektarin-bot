@@ -69,7 +69,7 @@ def clean_desc(text):
     text = clean(text)
     for pat in BOILERPLATE:
         text = re.sub(pat, "", text, flags=re.I | re.M)
-    return text.strip().strip(",").strip()[:MAX_DESC_LEN]
+    return text.strip().strip(",").strip()
 
 
 def shorten(s, max_len=200):
