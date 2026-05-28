@@ -42,10 +42,7 @@ def main():
     signal.signal(signal.SIGTERM, _safe_exit)
     atexit.register(_release_lock)
 
-    token = os.environ.get("TG_BOT_TOKEN", "")
-    if not token:
-        token = _CFG.get("bot_token", "")
-    if not token:
+    if not _get_token():
         print("Error: no bot token")
         _release_lock()
         return
