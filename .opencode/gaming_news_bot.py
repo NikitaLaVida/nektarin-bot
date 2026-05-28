@@ -7,6 +7,8 @@ import time
 import re
 import random
 import hashlib
+import signal
+import atexit
 from html import unescape
 from datetime import datetime, timezone
 from PIL import Image
@@ -376,6 +378,72 @@ def detect_image_type(data):
             return ext, mime
     return "jpg", "image/jpeg"
 
+
+SECURITY_STATE_KEY = "_last_security_check"
+
+def security_check(state, force=False):
+    now = time.time()
+    last = state.get(SECURITY_STATE_KEY, 0)
+    if not force and now - last < 86400:
+        return
+    issues = []
+    info = []
+
+    # 1. Token source
+    token_src = os.environ.get("TG_BOT_TOKEN", "")
+    if token_src:
+        info.append("Токен из TG_BOT_TOKEN ✅")
+    elif _CFG.get("bot_token"):
+        info.append("Токен из bot_config.json ⚠️ (храни в env)")
+
+    # 2. Proxy file
+    if os.path.exists(_PROXY_FILE):
+        issues.append("bot_proxy.txt содержит креды в открытом виде ⚠️")
+
+    # 3. State file size
+    state_size = os.path.getsize(STATE_FILE) if os.path.exists(STATE_FILE) else 0
+    if state_size > 1024 * 1024:
+        issues.append(f"bot_state.json: {state_size // 1024}KB ⚠️")
+    else:
+        info.append(f"State: {state_size // 1024}KB ✅")
+
+    # 4. Temp audio files
+    tmpdir = os.path.join(os.path.dirname(STATE_FILE), "audio_tmp")
+    tmp_count = 0
+    if os.path.exists(tmpdir):
+        tmp_count = len([f for f in os.listdir(tmpdir) if os.path.isfile(os.path.join(tmpdir, f))])
+    if tmp_count > 10:
+        issues.append(f"audio_tmp/: {tmp_count} файлов ⚠️")
+    else:
+        info.append(f"audio_tmp/: {tmp_count} файлов ✅")
+
+    # 5. Log size
+    log_size = os.path.getsize(LOG_FILE) / (1024 * 1024) if os.path.exists(LOG_FILE) else 0
+    if log_size > 10:
+        issues.append(f"bot.log: {log_size:.1f}MB ⚠️")
+    else:
+        info.append(f"Log: {log_size:.1f}MB ✅")
+
+    text = "\U0001F6E1 **Проверка безопасности**"
+    if issues:
+        text += f"\n\n\U0001F525 **Проблемы:**\n" + "\n".join(f"\U0001F539 {i}" for i in issues)
+    if info:
+        text += f"\n\n\U0001F4A1 **Статус:**\n" + "\n".join(f"\U0001F539 {i}" for i in info)
+    if not issues:
+        text += "\n\n\U00002705 Всё чисто!"
+
+    try:
+        tg("sendMessage", json={
+            "chat_id": ADMIN_CHAT_ID,
+            "text": text,
+            "parse_mode": "Markdown",
+        }, timeout=10)
+    except Exception as e:
+        print(f"  Security check send err: {e}")
+    state[SECURITY_STATE_KEY] = now
+    print(f"  Security check done ({len(issues)} issues)")
+
+
 IS_SAFE_URL_CACHE = {}
 SAFE_URL_CACHE_MAX = 200
 
@@ -429,6 +497,70 @@ def safe_rss_text(text, max_len=MAX_RSS_TEXT_LEN):
     return text
 
 CHANNEL_SIGNATURE = _CFG.get("channel_signature", "\n— @NektarinGaming")
+
+# --- Circuit breakers & safeties ---
+_LOCK_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".bot.lock")
+_GLOBAL_STATE = {}
+
+def _acquire_lock():
+    if os.path.exists(_LOCK_FILE):
+        try:
+            with open(_LOCK_FILE, "r") as f:
+                pid = int(f.read().strip())
+            import ctypes
+            PROCESS_QUERY_INFORMATION = 0x0400
+            h = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_INFORMATION, False, pid)
+            if h:
+                ctypes.windll.kernel32.CloseHandle(h)
+                print(f"  Lockfile alive (pid {pid}) — another instance running. Exiting.")
+                sys.exit(0)
+            else:
+                print(f"  Stale lockfile (pid {pid}) — removing.")
+                os.remove(_LOCK_FILE)
+        except (ValueError, OSError, Exception):
+            try:
+                os.remove(_LOCK_FILE)
+            except Exception:
+                pass
+    with open(_LOCK_FILE, "w") as f:
+        f.write(str(os.getpid()))
+    print(f"  Lock acquired (pid {os.getpid()})")
+
+def _release_lock():
+    try:
+        if os.path.exists(_LOCK_FILE):
+            with open(_LOCK_FILE, "r") as f:
+                pid = int(f.read().strip())
+            if pid == os.getpid():
+                os.remove(_LOCK_FILE)
+                print("  Lock released")
+    except Exception:
+        pass
+
+def _safe_exit(*args):
+    state = _GLOBAL_STATE.get("state")
+    if state is not None:
+        try:
+            save_state(state)
+            print("  State saved on exit")
+        except Exception:
+            pass
+    _release_lock()
+    if args:
+        sys.exit(0)
+
+def _disk_space_check(path=None, min_mb=200):
+    import shutil
+    try:
+        target = path or os.path.dirname(os.path.abspath(STATE_FILE))
+        usage = shutil.disk_usage(target)
+        free_mb = usage.free / (1024 * 1024)
+        if free_mb < min_mb:
+            print(f"  WARN: only {free_mb:.0f}MB free on disk (< {min_mb}MB)")
+            return False
+        return True
+    except Exception:
+        return True
 
 NIKITA_PICKS = [
     {"title": "Elden Ring", "desc": "Шедевр, который нужно пройти каждому. Открытый мир, сложные боссы и атмосфера, от которой мурашки.", "tag": "game"},
@@ -641,8 +773,10 @@ def load_state():
 
 def save_state(state):
     os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
-    with open(STATE_FILE, "w", encoding="utf-8") as f:
+    tmp = STATE_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, STATE_FILE)  # atomic on Windows
 
 def clean(text):
     text = unescape(text or "")
@@ -2410,9 +2544,16 @@ def post_listener_track(state):
 
 
 def main():
+    # --- Acquire lock (prevent concurrent runs) ---
+    _acquire_lock()
+    signal.signal(signal.SIGINT, _safe_exit)
+    signal.signal(signal.SIGTERM, _safe_exit)
+    atexit.register(_release_lock)
+
     token = os.environ.get("TG_BOT_TOKEN", BOT_TOKEN)
     if not token:
         print("Error: no bot token")
+        _release_lock()
         return
     globals()["BOT_TOKEN"] = token
 
@@ -2438,7 +2579,11 @@ def main():
     log_path = os.path.abspath(LOG_FILE)
     print(f"Logging to {log_path}")
 
+    # --- Disk space check ---
+    _disk_space_check()
+
     state = load_state()
+    _GLOBAL_STATE["state"] = state
     ids = state.get("ids", {})
 
     # --- Cleanup temp audio files from previous runs ---
@@ -2455,6 +2600,9 @@ def main():
             print(f"  Cleaned up audio_tmp/")
         except Exception:
             pass
+
+    # --- Security check ---
+    security_check(state)
 
     # --- Twitch live check ---
     print("Checking Twitch...")
@@ -2804,6 +2952,10 @@ if __name__ == "__main__":
             print(f"FATAL: {e}\n{err}")
             with open(LOG_FILE, "a", encoding="utf-8") as f:
                 f.write(f"[CRASH] {err}\n")
+            try:
+                _safe_exit()
+            except Exception:
+                pass
             try:
                 bot = BOT_TOKEN
                 requests.post(f"{TG_API}{bot}/sendMessage", json={
