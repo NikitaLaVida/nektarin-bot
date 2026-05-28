@@ -474,7 +474,7 @@ def anime_caption(title, desc, link):
     ru_title = translate_en_ru(title)
     ru_desc = translate_en_ru(shorten(desc, 200))
     body = f"{ru_title}. {ru_desc}" if ru_desc else ru_title
-    return f"{emoji} {commentary}\n{"\u2581" * 7}\n{body}\n\nПодробнее: {link}{CHANNEL_SIGNATURE}\n#аниме"
+    return f"{emoji} {commentary}\n{'\u2581' * 7}\n{body}\n\nПодробнее: {link}{CHANNEL_SIGNATURE}\n#аниме"
 
 
 def post_anime_news(state):
