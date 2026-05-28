@@ -1,7 +1,7 @@
 *
 !.gitignore
 !README.md
-!Dockerfile
+!main.py
 !requirements.txt
 !.opencode/
 !.opencode/**
