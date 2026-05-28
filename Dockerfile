@@ -1,13 +1,10 @@
-FROM python:3.13-slim
-
-RUN pip install --no-cache-dir feedparser requests
+FROM python:3.11-slim
 
 WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
 COPY . .
 
-RUN mkdir -p /app/data
-
-ENV STATE_FILE=/app/data/bot_state.json
-ENV DATA_DIR=/app/data
-
-CMD ["python", "-u", "bot.py"]
+CMD ["python", ".opencode/gaming_news_bot.py", "--daemon"]
