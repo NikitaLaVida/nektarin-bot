@@ -1,3 +1,11 @@
+*
+!.gitignore
+!README.md
+!.opencode/
+!.opencode/**
+!.github/
+!LICENSE
+
 __pycache__/
 *.pyc
 data/

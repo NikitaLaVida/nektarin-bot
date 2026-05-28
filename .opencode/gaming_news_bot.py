@@ -13,7 +13,7 @@ from bot.config import (
     PRIORITY_KEYWORDS,
 )
 from bot.core import (
-    tg, save_state, escape_md, clean, clean_desc,
+    _get_token, tg, save_state, escape_md, clean, clean_desc,
     is_hot, is_trailer, extract_game, extract_numbers,
     extract_platforms, detect_theme, check_user_reply,
     get_recent_game_names, get_recent_titles, title_similarity,
@@ -377,11 +377,32 @@ def main():
     print(f"History: {len(ids)}")
 
 
+def run_iteration():
+    main()
+    _release_lock()
+    _acquire_lock()
+
+
 if __name__ == "__main__":
     if "--stats" in sys.argv:
         state = load_state()
         posted = state.get("posted_msgs", {})
         print(f"=== Stats: {len(posted)} messages posted ===")
+    elif "--daemon" in sys.argv:
+        interval = 1200
+        for i, arg in enumerate(sys.argv):
+            if arg == "--interval" and i + 1 < len(sys.argv):
+                interval = int(sys.argv[i + 1])
+        print(f"=== Daemon mode, interval={interval}s ===")
+        while True:
+            try:
+                run_iteration()
+            except Exception as e:
+                import traceback
+                err = traceback.format_exc()
+                print(f"Daemon iteration failed: {e}\n{err}")
+            print(f"Sleeping {interval}s...")
+            time.sleep(interval)
     else:
         try:
             main()
@@ -396,7 +417,7 @@ if __name__ == "__main__":
             except Exception:
                 pass
             try:
-                bot_token = os.environ.get("TG_BOT_TOKEN", _CFG.get("bot_token", ""))
+                bot_token = _get_token()
                 if bot_token:
                     requests.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json={
                         "chat_id": ADMIN_CHAT,

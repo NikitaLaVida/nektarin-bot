@@ -199,6 +199,8 @@ def save_state(state):
 def _get_token():
     token = BOT_TOKEN
     if not token:
+        token = os.environ.get("BOT_TOKEN", "")
+    if not token:
         token = os.environ.get("TG_BOT_TOKEN", "")
     if not token:
         token = _CFG.get("bot_token", "")
