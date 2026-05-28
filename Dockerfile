@@ -7,4 +7,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-CMD ["python", ".opencode/gaming_news_bot.py", "--daemon"]
+CMD [".opencode/gaming_news_bot.py", "--daemon"]
