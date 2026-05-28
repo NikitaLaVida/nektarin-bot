@@ -128,7 +128,6 @@ def security_check(state, force=False):
         tg("sendMessage", json={
             "chat_id": ADMIN_CHAT_ID,
             "text": text,
-            "parse_mode": "Markdown",
         }, timeout=10)
     except Exception as e:
         print(f"  Security check send err: {e}")

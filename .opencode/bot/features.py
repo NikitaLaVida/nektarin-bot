@@ -3,6 +3,8 @@ import re
 import time
 import random
 import hashlib
+import requests
+import feedparser
 
 _SEP = '\u2581'
 
