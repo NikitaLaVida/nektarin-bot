@@ -131,17 +131,22 @@ def main():
             if fg_id not in deals_posted:
                 deals_posted[fg_id] = {"time": time.time()}
                 new_free.append(fg)
+
     if new_free:
         print(f"  New free games: {len(new_free)}")
-        deal_msg = send_deals_batch([], epic_free if any(fg["source"] == "current" for fg in epic_free) else [],
-                                     gog_free if any(fg["title"] in [x["title"] for x in new_free] for fg in gog_free) else [])
+        new_epic = [g for g in epic_free if g["title"] in {x["title"] for x in new_free}]
+        new_gog = [g for g in gog_free if g["title"] in {x["title"] for x in new_free}]
+        deal_msg = send_deals_batch([], new_epic, new_gog)
         if deal_msg:
             posted += 1
+        new_ids = {g["title"] for g in new_free}
+        epic_free = [g for g in epic_free if g["title"] not in new_ids]
+        gog_free = [g for g in gog_free if g["title"] not in new_ids]
 
     if today != deals_date:
         state["last_deals_date"] = today
-        if steam_deals:
-            print(f"  Steam deals: {len(steam_deals)} items")
+        has_deals = steam_deals or epic_free or gog_free
+        if has_deals:
             deal_msg = send_deals_batch(steam_deals, epic_free, gog_free)
             if deal_msg:
                 posted += 1
@@ -336,6 +341,7 @@ def main():
         "ids", "stream_live_posted", "last_digest", "posted_msgs",
         "deals_posted", "watched_alerted",
         "anime_posted", "rock_posted",
+        "posted_rock_links", "posted_anime_links",
         "last_deals_date", "content_hashes", "comment_offset",
         "_bot_id", "listener_track", "last_moderation_sent",
         "pending_moderation", "moderation_offset",

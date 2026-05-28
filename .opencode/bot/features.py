@@ -338,6 +338,7 @@ def post_anime_news(state):
     last = state.get("anime_posted", "")
     if last == today:
         return False
+    anime_links = state.setdefault("posted_anime_links", [])
     interests = state.get("anime_interests", {})
     candidates = []
     for url, source, limit in ANIME_FEEDS:
@@ -352,6 +353,8 @@ def post_anime_news(state):
                     continue
                 sc = score_anime_entry(title, desc, interests)
                 link = entry.get("link", "")
+                if link in anime_links:
+                    continue
                 candidates.append((sc, title, desc, raw_desc, link, rss_image(entry), source))
         except Exception as e:
             print(f"  Anime feed {source} err: {e}")
@@ -383,6 +386,8 @@ def post_anime_news(state):
             msg_id = r.json()["result"]["message_id"]
     if msg_id:
         state["anime_posted"] = today
+        if link not in anime_links:
+            anime_links.append(link)
         print(f"  Anime news posted: {title[:50]}")
         return True
     return False
@@ -470,6 +475,7 @@ def post_rock_news(state):
     last = state.get("rock_posted", "")
     if last == today:
         return False
+    rocks_links = state.setdefault("posted_rock_links", [])
     artists_lower = [a.lower() for a in ROCK_ARTISTS]
     for url, source, limit in ROCK_FEEDS:
         try:
@@ -484,6 +490,9 @@ def post_rock_news(state):
                 if not matched:
                     continue
                 link = entry.get("link", "")
+                if link in rocks_links:
+                    print(f"  Rock already posted: {title[:40]}")
+                    continue
                 img = rss_image(entry)
                 artists_str = ", ".join(matched[:3])
                 ru_title = translate_en_ru(title)
@@ -547,6 +556,8 @@ def post_rock_news(state):
                                     print(f"  Audio sent: {tname} (msg#{r.json()['result']['message_id']})")
                 if msg_id:
                     state["rock_posted"] = today
+                    if link not in rocks_links:
+                        rocks_links.append(link)
                     print(f"  Rock news posted: {title[:50]} [{artists_str}]")
                     return True
         except Exception as e:
