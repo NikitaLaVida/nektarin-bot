@@ -21,9 +21,26 @@ TEST_MODE = False
 CHANNEL_ID = "@SPVRTVN" if TEST_MODE else "@NektarinGaming"
 ADMIN_CHAT = "@SPVRTVN"
 ADMIN_CHAT_ID = 710307297
+
+# --- Load external config (bot_config.json overrides defaults) ---
+_CFG = {}
+_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_config.json")
+if os.path.exists(_CONFIG_PATH):
+    try:
+        with open(_CONFIG_PATH, "r", encoding="utf-8") as _f:
+            _CFG = json.load(_f)
+        BOT_TOKEN = _CFG.get("bot_token", BOT_TOKEN)
+        TEST_MODE = _CFG.get("test_mode", TEST_MODE)
+        CHANNEL_ID = _CFG.get("channel_id", CHANNEL_ID)
+        ADMIN_CHAT = _CFG.get("admin_chat", ADMIN_CHAT)
+        ADMIN_CHAT_ID = _CFG.get("admin_chat_id", ADMIN_CHAT_ID)
+        print(f"  Config loaded from {_CONFIG_PATH}")
+    except Exception as _e:
+        print(f"  Config load err: {_e}")
+
 MAX_POSTS = 2
-POST_DELAY = 18000  # секунд между постами (5 часов)
-POST_DELAY_JITTER = 1800  # +-30 мин рандома
+POST_DELAY = 18000  # seconds between posts (5 hours)
+POST_DELAY_JITTER = 1800  # +-30 min jitter
 PRIORITY_KEYWORDS = [
     "gta 6", "gta vi", "grand theft auto",
     "elden ring", "witcher 4", "witcher",
@@ -343,7 +360,7 @@ WATCHED_GAMES = [
     "starfield", "stalker", "fallout",
 ]
 
-CHANNEL_SIGNATURE = "\n— @NektarinGaming"
+CHANNEL_SIGNATURE = _CFG.get("channel_signature", "\n— @NektarinGaming")
 
 NIKITA_PICKS = [
     {"title": "Elden Ring", "desc": "Шедевр, который нужно пройти каждому. Открытый мир, сложные боссы и атмосфера, от которой мурашки.", "tag": "game"},

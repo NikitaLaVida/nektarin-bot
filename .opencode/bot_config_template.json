@@ -1,0 +1,52 @@
+{
+  "_comment": "=== Конфиг бота новостного канала ===",
+  "_comment2": "Скопируй в bot_config.json, заполни свои данные",
+
+  "bot_token": "8879790921:AAE9hwgmrpSoa5wr7NCXA6H9CBDp6JgC3s0",
+  "test_mode": true,
+  "channel_id": "@NektarinGaming",
+  "admin_chat": "@SPVRTVN",
+  "admin_chat_id": 710307297,
+  "channel_signature": "\n— @NektarinGaming",
+
+  "max_posts_per_run": 2,
+  "post_delay_seconds": 18000,
+  "moderation_ttl": 86400,
+  "moderation_interval": 3600,
+  "silent_hours_start": 0,
+  "silent_hours_end": 10,
+
+  "rss_feeds": [
+    ["https://www.igromania.ru/rss/news.xml", "igromania", 10],
+    ["https://www.goha.ru/rss/news", "goha", 5],
+    ["https://www.goha.ru/rss/videogames", "goha_videogames", 5],
+    ["https://www.goha.ru/rss/industry", "goha_industry", 3],
+    ["https://www.playground.ru/rss/news.xml", "playground", 10],
+    ["https://stopgame.ru/news/rss.xml", "stopgame", 7],
+    ["https://kanobu.ru/rss/main.rss", "kanobu", 5],
+    ["https://vgtimes.ru/rss/news/", "vgtimes", 5],
+    ["https://shazoo.ru/rss.xml", "shazoo", 5]
+  ],
+
+  "anime_feeds": [
+    ["https://www.animenewsnetwork.com/news/rss.xml", "animenews", 5],
+    ["https://shazoo.ru/rss.xml", "shazoo_anime", 3]
+  ],
+
+  "rock_feeds": [
+    ["https://www.rockmusic.ru/rss/news", "rockmusic", 7],
+    ["https://www.altpress.com/rss", "altpress", 5],
+    ["https://consequence.net/rock/feed/", "consequence", 5],
+    ["https://loudwire.com/feed", "loudwire", 7],
+    ["https://www.nme.com/music/rss", "nme_music", 5],
+    ["https://www.rollingstone.com/music/music-news/feed/", "rollingstone", 5]
+  ],
+
+  "watched_games": [
+    "elden ring", "witcher", "gta", "cyberpunk",
+    "red dead", "god of war", "silksong",
+    "half-life", "mass effect", "dragon age",
+    "disco elysium", "baldurs gate", "baldur's gate",
+    "starfield", "stalker", "fallout"
+  ]
+}
