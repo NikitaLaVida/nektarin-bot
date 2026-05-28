@@ -40,8 +40,11 @@ PRIORITY_KEYWORDS = [
     "silksong", "hollow knight",
     "секрет", "слух", "утечк", "слив",
 ]
-STATE_FILE = os.path.expanduser("~/.opencode/bot_state.json")
-LOG_FILE = os.path.expanduser("~/.opencode/bot.log")
+_DATA_DIR = os.environ.get("DATA_DIR", "")
+if not _DATA_DIR:
+    _DATA_DIR = os.path.expanduser("~/.opencode")
+STATE_FILE = os.path.join(_DATA_DIR, "bot_state.json")
+LOG_FILE = os.path.join(_DATA_DIR, "bot.log")
 SILENT_HOURS = range(0, 10)
 
 TWITCH_CLIENT_ID = "kimne78kx3ncx6brgo4mv6wki5h1ko"
