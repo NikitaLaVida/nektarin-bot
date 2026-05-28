@@ -1,8 +1,9 @@
 {
   "_comment": "=== Конфиг бота новостного канала ===",
   "_comment2": "Скопируй в bot_config.json, заполни свои данные",
+  "_comment_token": "Токен можно задать здесь или через переменную TG_BOT_TOKEN",
 
-  "bot_token": "8879790921:AAE9hwgmrpSoa5wr7NCXA6H9CBDp6JgC3s0",
+  "bot_token": "твой_токен_сюда",
   "test_mode": true,
   "channel_id": "@NektarinGaming",
   "admin_chat": "@SPVRTVN",

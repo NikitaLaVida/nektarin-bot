@@ -16,7 +16,7 @@ from deep_translator import GoogleTranslator
 _TRANSLATOR = GoogleTranslator(source='en', target='ru')
 _TRANSLATE_CACHE = {}
 
-BOT_TOKEN = "8879790921:AAE9hwgmrpSoa5wr7NCXA6H9CBDp6JgC3s0"
+BOT_TOKEN = ""
 TEST_MODE = False
 CHANNEL_ID = "@SPVRTVN" if TEST_MODE else "@NektarinGaming"
 ADMIN_CHAT = "@SPVRTVN"
@@ -360,6 +360,27 @@ WATCHED_GAMES = [
     "starfield", "stalker", "fallout",
 ]
 
+IS_SAFE_URL_CACHE = {}
+
+def is_safe_url(url):
+    if not url:
+        return False
+    if url in IS_SAFE_URL_CACHE:
+        return IS_SAFE_URL_CACHE[url]
+    import urllib.parse
+    host = urllib.parse.urlparse(url).hostname
+    if not host:
+        return False
+    safe = True
+    if host in ("localhost", "127.0.0.1", "0.0.0.0", "::1"):
+        safe = False
+    elif host.startswith("10.") or host.startswith("172.16.") or host.startswith("192.168."):
+        safe = False
+    elif host == "[::1]" or host == "0.0.0.0":
+        safe = False
+    IS_SAFE_URL_CACHE[url] = safe
+    return safe
+
 CHANNEL_SIGNATURE = _CFG.get("channel_signature", "\n— @NektarinGaming")
 
 NIKITA_PICKS = [
@@ -517,7 +538,8 @@ def send_error(msg):
 
 def escape_md(text):
     text = str(text)
-    text = text.replace("_", "\\_").replace("*", "\\*").replace("`", "\\`").replace("[", "\\[").replace("]", "\\]")
+    for ch in ("_", "*", "`", "[", "]", "(", ")", "~", ">", "#", "+", "-", "=", "|", "!", "%", "@", "."):
+        text = text.replace(ch, "\\" + ch)
     return text
 
 
@@ -902,7 +924,7 @@ def steamgrid_image(game_name):
         return None
     try:
         r = requests.get(
-            f"https://www.steamgriddb.com/api/v2/search/autocomplete/{game_name[:30]}",
+            f"https://www.steamgriddb.com/api/v2/search/autocomplete/{requests.utils.quote(game_name[:30])}",
             headers={"Authorization": f"Bearer {key}"},
             timeout=8)
         if r.status_code != 200:
@@ -1261,7 +1283,7 @@ def is_hd(img_data):
 
 def find_post_image(item):
     rss_img = item.get("rss_img")
-    if rss_img:
+    if rss_img and is_safe_url(rss_img):
         try:
             resp = requests.get(rss_img, timeout=5, headers={"User-Agent": "Mozilla/5.0"})
             if resp.status_code == 200 and is_hd(resp.content):
@@ -1300,7 +1322,7 @@ def send_post(title, desc, link, img_url, youtube_url=None, game=None, custom_ca
             print(f"  Trailer err: {e}")
 
     # Normal image
-    if img_url:
+    if img_url and is_safe_url(img_url):
         try:
             img_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
             img_data = requests.get(img_url, headers=img_headers, timeout=10)
@@ -1798,7 +1820,7 @@ def post_anime_news(state):
 
     caption = anime_caption(title, desc, link)
     msg_id = None
-    if img:
+    if img and is_safe_url(img):
         try:
             img_data = requests.get(img, timeout=8)
             if img_data.status_code == 200 and is_hd(img_data.content):
@@ -1979,7 +2001,7 @@ def post_rock_news(state):
                 # Album cover first
                 if album_name:
                     cover_url = album_cover_url(artist, album_name)
-                    if cover_url:
+                    if cover_url and is_safe_url(cover_url):
                         try:
                             resp = requests.get(cover_url, timeout=8)
                             if resp.status_code == 200 and is_hd(resp.content):
@@ -1988,7 +2010,7 @@ def post_rock_news(state):
                             pass
 
                 # Fallback to RSS image
-                if not caption_photo and img:
+                if not caption_photo and img and is_safe_url(img):
                     try:
                         img_data = requests.get(img, timeout=8)
                         if img_data.status_code == 200 and is_hd(img_data.content):
@@ -2307,7 +2329,11 @@ def post_listener_track(state):
     from_name = track.get("from", "Подписчик")
     tmpdir = os.path.join(os.path.dirname(STATE_FILE), "audio_tmp")
     os.makedirs(tmpdir, exist_ok=True)
-    results = download_audio(text, tmpdir)
+    safe_query = re.sub(r"[^a-zA-Z0-9а-яА-ЯёЁ\s\-—–\'\"@]", "", text)[:100]
+    if not safe_query.strip():
+        print(f"  Listener track sanitized to empty, skipping")
+        return False
+    results = download_audio(safe_query, tmpdir)
     path = None
     real_title = text
     if results:
