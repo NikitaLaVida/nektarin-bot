@@ -5,7 +5,7 @@ import requests
 
 from bot.config import WIKI_UA, STATE_FILE
 from bot.security import safe_download_image, is_safe_url
-from bot.core import is_hd, extract_game, log
+from bot.core import is_hd, extract_game
 
 
 _PINTEREST_SESSION = None

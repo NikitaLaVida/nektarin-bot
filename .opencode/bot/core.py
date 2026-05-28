@@ -18,15 +18,12 @@ from bot.config import (
     GAMING_SIGNAL_WORDS, NON_GAMING_TITLE_WORDS,
     GAME_DEDUP_HOURS, TITLE_DEDUP_HOURS, TITLE_DEDUP_MIN_WORDS,
     WIKI_UA, _CFG, ADMIN_CHAT, ADMIN_CHAT_ID,
-    CHANNEL_ID, BOT_TOKEN, TG_PROXY as TG_PROXY_VAL,
+    CHANNEL_ID, BOT_TOKEN, _SEP, TG_PROXY as TG_PROXY_VAL,
 )
 
 _TRANSLATOR = GoogleTranslator(source='en', target='ru')
 _TRANSLATE_CACHE = {}
 _TRANSLATE_CACHE_MAX = 500
-_YT_CACHE = {}
-_YT_CACHE_MAX = 500
-
 _orig_print = print
 
 def safe_print(*args, **kwargs):
@@ -59,12 +56,6 @@ def escape_md(text):
     return text
 
 
-def safe_rss_text(text, max_len=MAX_RSS_TEXT_LEN):
-    text = str(text)[:max_len]
-    text = text.replace("\x00", "")
-    return text
-
-
 def clean(text):
     text = unescape(text or "")
     text = re.sub(r"<[^>]+>", "", text)
@@ -78,7 +69,7 @@ def clean_desc(text):
     text = clean(text)
     for pat in BOILERPLATE:
         text = re.sub(pat, "", text, flags=re.I | re.M)
-    return text.strip().strip(",").strip()[:300]
+    return text.strip().strip(",").strip()[:MAX_DESC_LEN]
 
 
 def shorten(s, max_len=200):
@@ -386,12 +377,6 @@ def smart_comment(theme, game, title):
     return random.choice(ctx.get(theme, ctx["generic"]))
 
 
-def embed_link(text, link):
-    if not link or link in text:
-        return text
-    return f"{text}\n\nПодробнее: {link}"
-
-
 COMMENTARIES = {
     "sales": [
         "Ого, неплохо продаётся!", "Народ знает толк.",
@@ -459,56 +444,56 @@ def template_sales(title, desc, game, numbers, platforms, genre, link):
     n = numbers[0] if numbers else "внушительное количество"
     commentary = smart_comment("sales", game, title)
     body = f"Продажи {game} достигли отметки в {n} копий. {s}"
-    return [commentary, "\u2581" * 7, embed_link(body, link)]
+    return [commentary, _SEP * 7, embed_link(body, link)]
 
 
 def template_delay(title, desc, game, numbers, platforms, genre, link):
     s = shorten(desc, MAX_DESC_LEN)
     commentary = smart_comment("delay", game, title)
     body = f"Релиз {game} перенесён. {s}"
-    return [commentary, "\u2581" * 7, embed_link(body, link)]
+    return [commentary, _SEP * 7, embed_link(body, link)]
 
 
 def template_sequel(title, desc, game, numbers, platforms, genre, link):
     s = shorten(desc, MAX_DESC_LEN)
     commentary = smart_comment("sequel", game, title)
     body = f"{game} — продолжение истории. {s}"
-    return [commentary, "\u2581" * 7, embed_link(body, link)]
+    return [commentary, _SEP * 7, embed_link(body, link)]
 
 
 def template_console(title, desc, game, numbers, platforms, genre, link):
     s = shorten(desc, MAX_DESC_LEN)
     commentary = smart_comment("console", game, title)
     body = f"{game}{' на ' + '/'.join(platforms[:3]) if platforms else ''}. {s}"
-    return [commentary, "\u2581" * 7, embed_link(body, link)]
+    return [commentary, _SEP * 7, embed_link(body, link)]
 
 
 def template_drama(title, desc, game, numbers, platforms, genre, link):
     s = shorten(desc, MAX_DESC_LEN)
     commentary = smart_comment("drama", game, title)
     body = f"Скандал вокруг {game}. {s}"
-    return [commentary, "\u2581" * 7, embed_link(body, link)]
+    return [commentary, _SEP * 7, embed_link(body, link)]
 
 
 def template_generic(title, desc, game, numbers, platforms, genre, link):
     s = shorten(desc, MAX_DESC_LEN)
     commentary = smart_comment("generic", game, title)
     body = f"{title}. {s}" if s else title
-    return [commentary, "\u2581" * 7, embed_link(body, link)]
+    return [commentary, _SEP * 7, embed_link(body, link)]
 
 
 def template_rumor(title, desc, game, numbers, platforms, genre, link):
     s = shorten(desc, MAX_DESC_LEN)
     commentary = smart_comment("rumor", game, title)
     body = f"Говорят, что {game}. {s}"
-    return [commentary, "\u2581" * 7, embed_link(body, link)]
+    return [commentary, _SEP * 7, embed_link(body, link)]
 
 
 def template_announce(title, desc, game, numbers, platforms, genre, link):
     s = shorten(desc, MAX_DESC_LEN)
     commentary = smart_comment("announce", game, title)
     body = f"Анонс! {game}. {s}"
-    return [commentary, "\u2581" * 7, embed_link(body, link)]
+    return [commentary, _SEP * 7, embed_link(body, link)]
 
 
 TEMPLATES = {
@@ -523,21 +508,22 @@ TEMPLATES = {
 }
 
 
-def youtube_search(query):
-    if query in _YT_CACHE:
-        return _YT_CACHE[query]
-    if len(_YT_CACHE) >= _YT_CACHE_MAX:
-        _YT_CACHE.clear()
+def send_audio_file(path, title, performer=None, chat_id=None):
+    ext = os.path.splitext(path)[1] or ".webm"
+    mime_map = {
+        ".mp3": "audio/mpeg", ".m4a": "audio/mp4",
+        ".webm": "audio/webm", ".opus": "audio/opus",
+        ".ogg": "audio/ogg", ".wav": "audio/wav",
+    }
+    mime = mime_map.get(ext.lower(), "audio/mpeg")
+    payload = {"chat_id": chat_id or CHANNEL_ID, "title": title[:60]}
+    if performer:
+        payload["performer"] = performer
+    with open(path, "rb") as f:
+        r = tg("sendAudio", data=payload,
+               files={"audio": (f"audio{ext}", f, mime)}, timeout=30)
     try:
-        q = requests.utils.quote(query)
-        r = requests.get(f"https://www.youtube.com/results?search_query={q}",
-                         headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
-        if r.status_code == 200:
-            ids = re.findall(r"watch\?v=([a-zA-Z0-9_-]{11})", r.text)
-            if ids:
-                url = f"https://youtu.be/{ids[0]}"
-                _YT_CACHE[query] = url
-                return url
-    except Exception as e:
-        print(f"  YT search err: {e}")
-    return None
+        os.remove(path)
+    except Exception:
+        pass
+    return r

@@ -8,16 +8,15 @@ from datetime import datetime, timezone
 
 from bot.config import (
     STATE_FILE, LOG_FILE, CHANNEL_ID, CHANNEL_SIGNATURE, ADMIN_CHAT,
-    ADMIN_CHAT_ID, SILENT_HOURS, MAX_POSTS, MODERATION_INTERVAL,
-    MODERATION_TTL, RSS_FEEDS, _CFG, _GLOBAL_STATE, MAX_CAPTION_LEN,
-    PRIORITY_KEYWORDS,
+    ADMIN_CHAT_ID, SILENT_HOURS, MODERATION_INTERVAL,
+    MODERATION_TTL, set_global_state, WATCHED_GAMES,
 )
 from bot.core import (
     _get_token, tg, save_state, escape_md, clean, clean_desc,
     is_hot, is_trailer, extract_game, extract_numbers,
     extract_platforms, detect_theme, check_user_reply,
     get_recent_game_names, get_recent_titles, title_similarity,
-    is_gaming_related, pick, load_state, log, shorten,
+    is_gaming_related, pick, load_state, log, shorten, send_audio_file,
 )
 from bot.security import (
     security_check, _acquire_lock, _release_lock, _safe_exit,
@@ -29,10 +28,7 @@ from bot.features import (
     send_deals_batch, check_is_live,
     make_caption, reply_to_comments, post_listener_track,
     post_anime_news, post_rock_news, make_channel_stats,
-    fetch_steam_top_sellers, make_top_sellers_post, post_nikita_recommendation,
-    fetch_on_this_day, make_on_this_day_post, fetch_upcoming_releases,
-    make_releases_post, post_quiz, post_poll, fetch_top_weekly,
-    post_feature, game_ost_tracks,
+    game_ost_tracks, find_post_image,
 )
 
 
@@ -72,7 +68,7 @@ def main():
     _disk_space_check()
 
     state = load_state()
-    _GLOBAL_STATE["state"] = state
+    set_global_state("state", state)
     ids = state.get("ids", {})
 
     # Cleanup temp audio
@@ -112,7 +108,6 @@ def main():
     now_h = time.localtime().tm_hour
     now_wday = time.localtime().tm_wday
     today = time.strftime("%Y-%m-%d")
-    week = time.strftime("%Y-W%V")
 
     if now_h in SILENT_HOURS:
         print(f"Night mode ({now_h}:00 — {max(SILENT_HOURS)+1}:00), skipping news")
@@ -157,13 +152,7 @@ def main():
     if steam_deals:
         for deal in steam_deals:
             t = deal["title"].lower()
-            if any(w in t for w in [
-                "elden ring", "witcher", "gta", "cyberpunk",
-                "red dead", "god of war", "silksong",
-                "half-life", "mass effect", "dragon age",
-                "disco elysium", "baldurs gate", "baldur's gate",
-                "starfield", "stalker", "fallout",
-            ]):
+            if any(w in t for w in WATCHED_GAMES):
                 watched_matched.append(deal)
 
     if watched_matched:
@@ -270,25 +259,11 @@ def main():
                     if p_game_name and len(p_game_name) > 2:
                         tracks = game_ost_tracks(p_game_name, os.path.join(os.path.dirname(STATE_FILE), "audio_tmp"))
                         if tracks and len(tracks) >= 2:
-                            for path, title in tracks[:2]:
+                            for path, track_title in tracks[:2]:
                                 if path and os.path.exists(path):
-                                    ext = os.path.splitext(path)[1] or ".webm"
-                                    mime_map = {
-                                        ".mp3": "audio/mpeg", ".m4a": "audio/mp4",
-                                        ".webm": "audio/webm", ".opus": "audio/opus",
-                                        ".ogg": "audio/ogg", ".wav": "audio/wav",
-                                    }
-                                    mime = mime_map.get(ext.lower(), "audio/mpeg")
-                                    with open(path, "rb") as f:
-                                        r = tg("sendAudio", data={
-                                            "chat_id": CHANNEL_ID, "title": title[:60],
-                                        }, files={"audio": (f"ost{ext}", f, mime)}, timeout=30)
-                                    try:
-                                        os.remove(path)
-                                    except Exception:
-                                        pass
+                                    r = send_audio_file(path, track_title)
                                     if r:
-                                        print(f"  OST sent for {p_game_name}: {title[:50]}")
+                                        print(f"  OST sent for {p_game_name}: {track_title[:50]}")
 
                 if msg_id_posted:
                     posted += 1
@@ -304,33 +279,31 @@ def main():
     # Add new unseen items to pending
     last_mod = state.get("last_moderation_sent", 0)
     if unseen and (time.time() - last_mod >= MODERATION_INTERVAL):
-        best = unseen[0]
-        theme = best["_theme"]
-        emoji = "\U0001F4F0"
-
-        caption = make_caption(best["title"], best.get("desc", ""), best["link"], best["_game"])
-        img = find_post_image(best)
-        preview_text = f"\U0001F514 **Пре-модерация**\n\n{caption}"
-        r = tg("sendMessage", json={
-            "chat_id": ADMIN_CHAT,
-            "text": preview_text,
-            "parse_mode": "Markdown",
-        }, timeout=10)
-        if r:
-            mod_msg_id = r.json()["result"]["message_id"]
-            new_pending.append({
-                "title": best["title"],
-                "desc": best.get("desc", ""),
-                "link": best["link"],
-                "img_url": img,
-                "youtube_url": best.get("youtube_url"),
-                "game": best["_game"],
-                "msg_id": mod_msg_id,
-                "time": time.time(),
-            })
+        for best in unseen[:3]:
+            caption = make_caption(best["title"], best.get("desc", ""), best["link"], best["_game"])
+            img = find_post_image(best)
+            preview_text = f"\U0001F514 **Пре-модерация**\n\n{caption}"
+            r = tg("sendMessage", json={
+                "chat_id": ADMIN_CHAT,
+                "text": preview_text,
+                "parse_mode": "Markdown",
+            }, timeout=10)
+            if r:
+                mod_msg_id = r.json()["result"]["message_id"]
+                new_pending.append({
+                    "title": best["title"],
+                    "desc": best.get("desc", ""),
+                    "link": best["link"],
+                    "img_url": img,
+                    "youtube_url": best.get("youtube_url"),
+                    "game": best["_game"],
+                    "msg_id": mod_msg_id,
+                    "time": time.time(),
+                })
+                print(f"  Moderation #{len(new_pending)}: {best['title'][:50]}")
+                ids[best["id"]] = {"time": time.time()}
+        if new_pending:
             state["last_moderation_sent"] = time.time()
-            print(f"  Moderation preview sent for: {best['title'][:50]}")
-            ids[best["id"]] = {"time": time.time()}
 
     state["pending_moderation"] = new_pending
 
@@ -361,8 +334,8 @@ def main():
     state["ids"] = ids
     keep_keys = {
         "ids", "stream_live_posted", "last_digest", "posted_msgs",
-        "deals_posted", "features_posted", "watched_alerted",
-        "nikita_posted", "anime_posted", "rock_posted",
+        "deals_posted", "watched_alerted",
+        "anime_posted", "rock_posted",
         "last_deals_date", "content_hashes", "comment_offset",
         "_bot_id", "listener_track", "last_moderation_sent",
         "pending_moderation", "moderation_offset",
@@ -381,11 +354,99 @@ def run_iteration():
     _acquire_lock()
 
 
+def force_moderation(count=3):
+    state = load_state()
+    _disk_space_check()
+    ids = state.get("ids", {})
+    content_hashes = state.setdefault("content_hashes", {})
+    posted_msgs = state.setdefault("posted_msgs", {})
+    recent_games = get_recent_game_names(posted_msgs)
+    recent_titles = get_recent_titles(posted_msgs)
+
+    raw = fetch_news()
+    print(f"\nTotal raw items: {len(raw)}")
+
+    unseen = []
+    for item in raw:
+        if item["id"] in ids:
+            continue
+        if str(item["content_hash"]) in content_hashes:
+            continue
+        score = 0
+        desc_len = len(item.get("desc", ""))
+        score += min(desc_len / 5, 20)
+        if extract_numbers(item.get("desc", "")):
+            score += 5
+        if extract_platforms(item["title"] + " " + item.get("desc", "")):
+            score += 3
+        game = extract_game(item["title"])
+        game_lower = game.lower()
+        if not is_gaming_related(item["title"], item.get("desc", "")):
+            score -= 50
+        elif game and len(game_lower) > 3:
+            score += 10
+        if game_lower and len(game_lower) > 3 and game_lower in recent_games:
+            score -= 500
+        theme = detect_theme(item["title"], item.get("desc", ""))
+        if is_hot(item):
+            score += 50
+        if is_trailer(item["title"]):
+            score += 10
+        if item.get("youtube_url"):
+            score += 5
+        item["_score"] = score
+        item["_game"] = game
+        item["_theme"] = theme
+        unseen.append(item)
+
+    unseen.sort(key=lambda x: -x["_score"])
+    print(f"Unseen candidates: {len(unseen)}")
+
+    pending = state.get("pending_moderation", [])
+    sent = 0
+    for best in unseen[:count]:
+        caption = make_caption(best["title"], best.get("desc", ""), best["link"], best["_game"])
+        img = find_post_image(best)
+        preview_text = f"\U0001F514 **Пре-модерация**\n\n{caption}"
+        r = tg("sendMessage", json={
+            "chat_id": ADMIN_CHAT,
+            "text": preview_text,
+            "parse_mode": "Markdown",
+        }, timeout=10)
+        if r:
+            mod_msg_id = r.json()["result"]["message_id"]
+            pending.append({
+                "title": best["title"],
+                "desc": best.get("desc", ""),
+                "link": best["link"],
+                "img_url": img,
+                "youtube_url": best.get("youtube_url"),
+                "game": best["_game"],
+                "msg_id": mod_msg_id,
+                "time": time.time(),
+            })
+            ids[best["id"]] = {"time": time.time()}
+            print(f"  Moderation #{sent+1}: {best['title'][:50]}")
+            sent += 1
+
+    state["pending_moderation"] = pending
+    state["ids"] = ids
+    state["last_moderation_sent"] = time.time()
+    save_state(state)
+    print(f"\nSent {sent} moderation previews")
+
+
 if __name__ == "__main__":
     if "--stats" in sys.argv:
         state = load_state()
         posted = state.get("posted_msgs", {})
         print(f"=== Stats: {len(posted)} messages posted ===")
+    elif "--mod" in sys.argv:
+        n = 3
+        for i, arg in enumerate(sys.argv):
+            if arg == "--mod" and i + 1 < len(sys.argv) and sys.argv[i + 1].isdigit():
+                n = int(sys.argv[i + 1])
+        force_moderation(n)
     elif "--daemon" in sys.argv:
         interval = 1200
         for i, arg in enumerate(sys.argv):

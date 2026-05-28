@@ -3,7 +3,7 @@ import json
 
 BOT_TOKEN = ""
 TEST_MODE = False
-CHANNEL_ID = "@SPVRTVN" if TEST_MODE else "@NektarinGaming"
+CHANNEL_ID = "@NektarinGaming"
 ADMIN_CHAT = "@SPVRTVN"
 ADMIN_CHAT_ID = 710307297
 
@@ -22,8 +22,7 @@ if os.path.exists(_CONFIG_PATH):
         print(f"  Config load err: {_e}")
 
 MAX_POSTS = 2
-POST_DELAY = 18000
-POST_DELAY_JITTER = 1800
+_SEP = '\u2581'
 PRIORITY_KEYWORDS = [
     "gta 6", "gta vi", "grand theft auto",
     "elden ring", "witcher 4", "witcher",
@@ -343,7 +342,6 @@ if not TG_PROXY and os.path.exists(_PROXY_FILE):
 
 MAX_CAPTION_LEN = 900
 MAX_DESC_LEN = 250
-SHORTEN_FALLBACK = 200
 MAX_IMAGE_SIZE = 10 * 1024 * 1024
 MAX_RSS_TEXT_LEN = 2000
 
@@ -360,18 +358,11 @@ CHANNEL_SIGNATURE = _CFG.get("channel_signature", "\n— @NektarinGaming")
 _LOCK_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".bot.lock")
 _GLOBAL_STATE = {}
 
-NIKITA_PICKS = [
-    {"title": "Elden Ring", "desc": "Шедевр, который нужно пройти каждому. Открытый мир, сложные боссы и атмосфера, от которой мурашки.", "tag": "game"},
-    {"title": "Cyberpunk 2077", "desc": "После всех патчей — это совсем другая игра. Атмосферный киберпанк с отличным сюжетом.", "tag": "game"},
-    {"title": "God of War Ragnarök", "desc": "История Кратоса и Атрея — лучший эксклюзив современности.", "tag": "game"},
-    {"title": "Ванпанчмен", "desc": "Смешная и динамичная пародия на жанр супергероев. Рекомендую тем, кто хочет поржать и расслабиться.", "tag": "anime"},
-    {"title": "Магическая битва", "desc": "Best анимация последних лет, эпичные битвы и харизматичные персонажи.", "tag": "anime"},
-    {"title": "Клинок, рассекающий демонов", "desc": "Красивейшее аниме с невероятной рисовкой. История про семью и месть.", "tag": "anime"},
-    {"title": "Атака титанов", "desc": "Легендарное аниме, которое обязательно к просмотру. Сюжетные повороты разрывают шаблон.", "tag": "anime"},
-    {"title": "The Witcher 3", "desc": "Игра, в которую можно уйти с головой на сотни часов. Лучшее фэнтези в гейминге.", "tag": "game"},
-    {"title": "Disco Elysium", "desc": "Если хочется чего-то необычного — этот детектив с RPG-элементами сносит крышу.", "tag": "game"},
-    {"title": "Baldur's Gate 3", "desc": "Лучшая RPG последних лет. Можно потерять сон на недели, честно предупреждаю.", "tag": "game"},
-]
+def set_global_state(key, value):
+    _GLOBAL_STATE[key] = value
+
+def get_global_state(key, default=None):
+    return _GLOBAL_STATE.get(key, default)
 
 NON_GAMING_TITLE_WORDS = {
     "сериал", "фильм", "актёр", "актер", "кино", "эпизод",

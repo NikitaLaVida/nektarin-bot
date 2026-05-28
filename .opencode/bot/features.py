@@ -7,15 +7,14 @@ import requests
 import feedparser
 from datetime import datetime, timezone
 
-_SEP = '\u2581'
-
 from bot.config import (
     CHANNEL_ID, STATE_FILE, CHANNEL_SIGNATURE, ADMIN_CHAT,
     ANIME_FEEDS, ROCK_FEEDS, ROCK_ARTISTS, ROCK_TRACKS,
     MAX_DESC_LEN, MODERATION_TTL, MODERATION_INTERVAL,
-    NIKITA_PICKS, WIKI_UA, WATCHED_GAMES, GAME_DEDUP_HOURS,
+    WIKI_UA, GAME_DEDUP_HOURS,
     TITLE_DEDUP_HOURS, TITLE_DEDUP_MIN_WORDS, TITLE_SIMILARITY_THRESHOLD,
-    MAX_CAPTION_LEN, MAX_IMAGE_SIZE, _CFG,
+    MAX_CAPTION_LEN, MAX_IMAGE_SIZE, TWITCH_CLIENT_ID, _SEP,
+    RSS_FEEDS,
 )
 from bot.core import (
     tg, tg_get, save_state, escape_md, clean, clean_desc,
@@ -23,8 +22,8 @@ from bot.core import (
     extract_game, extract_numbers, extract_platforms,
     detect_genre, detect_theme, is_gaming_related,
     get_recent_game_names, get_recent_titles, title_similarity,
-    has_gaming_context, send_error, youtube_search, load_state, log,
-    extract_youtube, is_hd, pick, smart_comment,
+    has_gaming_context, send_error, load_state, log,
+    extract_youtube, is_hd, pick, smart_comment, send_audio_file,
     COMMENTARIES, THEME_EMOJI, THEME_HASHTAGS,
     embed_link, TEMPLATES,
 )
@@ -311,155 +310,7 @@ def fetch_steam_deals(min_discount=70):
         return []
 
 
-def fetch_steam_top_sellers():
-    try:
-        r = requests.get("https://store.steampowered.com/api/featuredcategories",
-            params={"cc": "RU", "l": "russian"}, timeout=10)
-        if r.status_code != 200:
-            return []
-        data = r.json()
-        items = data.get("top_sellers", {}).get("items", [])[:10]
-        top = []
-        for item in items:
-            name = item.get("name", "")
-            appid = item.get("id")
-            dp = item.get("discount_percent", 0)
-            if not name or not appid:
-                continue
-            if dp:
-                final = (item.get("final_price") or 0) / 100
-                orig = (item.get("original_price") or 0) / 100
-                price = f"\u20BD{final:.0f} (-{dp}%)"
-            else:
-                orig = (item.get("original_price") or 0) / 100
-                price = f"\u20BD{orig:.0f}" if orig else "?"
-            top.append({"title": name, "appid": appid, "price": price, "discount": dp})
-        return top
-    except Exception as e:
-        print(f"  Top sellers error: {e}")
-        return []
 
-
-def make_top_sellers_post(top):
-    lines = ["\U0001F3C6 **Топ продаж Steam за неделю**", ""]
-    for i, game in enumerate(top, 1):
-        medal = "\U0001F947" if i == 1 else "\U0001F948" if i == 2 else "\U0001F949" if i == 3 else "\U0001F539"
-        lines.append(f"{medal} [{game['title']}](https://store.steampowered.com/app/{game['appid']}/)")
-        lines.append(f"   {game['price']}")
-    lines.append("")
-    lines.append("_\u0427\u0442\u043E \u0431\u0440\u0430\u0442\u044C \u0431\u0443\u0434\u0435\u043C?_\u200E")
-    return "\n".join(lines)
-
-
-def fetch_on_this_day():
-    try:
-        month = time.localtime().tm_mon
-        day = time.localtime().tm_mday
-        r = requests.get(
-            f"https://en.wikipedia.org/api/rest_v1/feed/onthisday/events/{month}/{day}",
-            timeout=8)
-        if r.status_code != 200:
-            return []
-        data = r.json()
-        games = []
-        for event in data.get("events", []):
-            text = event.get("text", "")
-            year = event.get("year", "")
-            if not text or not year:
-                continue
-            t = text.lower()
-            if any(w in t for w in ("video game", "released", "published", "launched")):
-                pages = event.get("pages", [])
-                img = ""
-                for p in pages:
-                    if p.get("thumbnail"):
-                        img = p["thumbnail"].get("source", "")
-                        break
-                games.append({"text": text, "year": year, "image": img})
-            if len(games) >= 3:
-                break
-        return games
-    except Exception as e:
-        print(f"  On this day error: {e}")
-        return []
-
-
-def make_on_this_day_post(events):
-    lines = ["\U0001F4C5 **\u0412 \u044D\u0442\u043E\u0442 \u0434\u0435\u043D\u044C \u0432 \u0438\u0433\u0440\u043E\u043F\u0440\u043E\u043C\u0435**", ""]
-    for ev in events:
-        lines.append(f"\u2022 **{ev['year']}** \u2014 {ev['text']}")
-    lines.append("")
-    lines.append("_\u041D\u043E\u0441\u0442\u0430\u043B\u044C\u0433\u0438\u044F, \u043E\u0434\u043D\u0430\u043A\u043E._")
-    return "\n".join(lines), events[0]["image"] if events and events[0]["image"] else None
-
-
-def fetch_upcoming_releases():
-    try:
-        r = requests.get(
-            "https://en.wikipedia.org/w/api.php",
-            params={
-                "action": "query", "list": "search",
-                "srsearch": f"upcoming video games {time.localtime().tm_year}",
-                "srlimit": 3, "format": "json",
-            },
-            timeout=8, headers={"User-Agent": WIKI_UA},
-        )
-        data = r.json()
-        pages = data.get("query", {}).get("search", [])
-        releases = []
-        for p in pages:
-            title = p.get("title", "")
-            snippet = clean(p.get("snippet", ""))
-            if title:
-                releases.append({"title": title, "desc": snippet[:200]})
-        return releases
-    except Exception as e:
-        print(f"  Upcoming releases error: {e}")
-        return []
-
-
-def make_releases_post(releases):
-    lines = ["\U0001F4C5 **\u0420\u0435\u043B\u0438\u0437\u044B \u043D\u0435\u0434\u0435\u043B\u0438**", ""]
-    today = time.strftime("%d.%m")
-    lines.append(f"\u0412\u044B\u0445\u043E\u0434\u0438\u0442 \u043D\u0430 \u044D\u0442\u043E\u0439 \u043D\u0435\u0434\u0435\u043B\u0435 ({today}):")
-    lines.append("")
-    for r in releases:
-        lines.append(f"\U0001F539 **{r['title']}**")
-        if r["desc"]:
-            lines.append(f"   {r['desc']}")
-        lines.append("")
-    lines.append("_\u041F\u043E\u043B\u043D\u044B\u0439 \u0441\u043F\u0438\u0441\u043E\u043A \u043D\u0430 Wiki._")
-    return "\n".join(lines)
-
-
-def post_nikita_recommendation(state):
-    today = time.strftime("%Y-%m-%d")
-    last = state.get("nikita_posted", "")
-    if last == today:
-        return False
-    pick = random.choice(NIKITA_PICKS)
-    tag_emoji = "\U0001F3AE" if pick["tag"] == "game" else "\U0001F48C"
-    tag_label = "\u0418\u0433\u0440\u0430" if pick["tag"] == "game" else "\u0410\u043D\u0438\u043C\u0435"
-    text = (
-        f"{tag_emoji} **\u0420\u0435\u043A\u043E\u043C\u0435\u043D\u0434\u0430\u0446\u0438\u044F \u043E\u0442 \u041D\u0438\u043A\u0438\u0442\u044B**\n\n"
-        f"**{pick['title']}** ({tag_label})\n"
-        f"{pick['desc']}\n"
-        f"\u2581" * 7 + "\n"
-        f"\u041B\u0438\u0447\u043D\u043E \u043C\u043D\u0435 \u043E\u0447\u0435\u043D\u044C \u0437\u0430\u0448\u043B\u043E, \u043C\u043E\u0436\u0435\u0442 \u0438 \u0432\u0430\u043C \u0437\u0430\u0439\u0434\u0451\u0442."
-        f"{CHANNEL_SIGNATURE}"
-    )
-    try:
-        r = tg("sendMessage", json={
-            "chat_id": CHANNEL_ID, "text": text, "parse_mode": "Markdown",
-        }, timeout=10)
-        if r:
-            state["nikita_posted"] = today
-            print(f"  Nikita recommendation posted: {pick['title']}")
-            return True
-        print(f"  Recommendation failed")
-    except Exception as e:
-        print(f"  Recommendation err: {e}")
-    return False
 
 
 def score_anime_entry(title, desc, interests):
@@ -691,23 +542,7 @@ def post_rock_news(state):
                             if results:
                                 path, real_title = results[0]
                             if path and os.path.exists(path):
-                                ext = os.path.splitext(path)[1] or ".webm"
-                                mime_map = {
-                                    ".mp3": "audio/mpeg", ".m4a": "audio/mp4",
-                                    ".webm": "audio/webm", ".opus": "audio/opus",
-                                    ".ogg": "audio/ogg", ".wav": "audio/wav",
-                                }
-                                mime = mime_map.get(ext.lower(), "audio/mpeg")
-                                with open(path, "rb") as audio_f:
-                                    r = tg("sendAudio", data={
-                                        "chat_id": CHANNEL_ID,
-                                        "title": tname,
-                                        "performer": artist.title(),
-                                    }, files={"audio": (f"{tname}{ext}", audio_f, mime)}, timeout=30)
-                                try:
-                                    os.remove(path)
-                                except Exception:
-                                    pass
+                                r = send_audio_file(path, tname, performer=artist.title())
                                 if r:
                                     print(f"  Audio sent: {tname} (msg#{r.json()['result']['message_id']})")
                 if msg_id:
@@ -755,106 +590,7 @@ def make_channel_stats(state):
     return "\n".join(lines)
 
 
-QUIZZES = [
-    {"q": "\u041A\u0430\u043A\u0430\u044F \u0438\u0433\u0440\u0430 \u043F\u0440\u043E\u0434\u0430\u043B\u0430\u0441\u044C \u0442\u0438\u0440\u0430\u0436\u043E\u043C \u0431\u043E\u043B\u0435\u0435 30 \u043C\u0438\u043B\u043B\u0438\u043E\u043D\u043E\u0432 \u043A\u043E\u043F\u0438\u0439?", "opts": ["Minecraft", "GTA V", "Tetris", "Wii Sports"], "ans": 2},
-    {"q": "\u041A\u0442\u043E \u0440\u0430\u0437\u0440\u0430\u0431\u043E\u0442\u0430\u043B \u043F\u0435\u0440\u0432\u0443\u044E \u0438\u0433\u0440\u0443 \u0432 \u0441\u0435\u0440\u0438\u0438 Souls?", "opts": ["Hideki Kamiya", "Hidetaka Miyazaki", "Tomoyuki Hoshino", "Fumito Ueda"], "ans": 1},
-    {"q": "\u041A\u0430\u043A\u043E\u0439 \u0433\u043E\u0434 \u0432\u044B\u0448\u043B\u0430 \u043F\u0435\u0440\u0432\u0430\u044F \u0447\u0430\u0441\u0442\u044C The Witcher?", "opts": ["2005", "2007", "2009", "2011"], "ans": 1},
-    {"q": "\u0427\u0442\u043E \u043E\u0437\u043D\u0430\u0447\u0430\u0435\u0442 \u0430\u0431\u0431\u0440\u0435\u0432\u0438\u0430\u0442\u0443\u0440\u0430 RPG?", "opts": ["Realistic Physics Game", "Role-Playing Game", "Random Puzzle Game", "Rapid Platforming Game"], "ans": 1},
-    {"q": "\u041A\u0430\u043A\u043E\u0439 \u043F\u0435\u0440\u0441\u043E\u043D\u0430\u0436 \u043D\u0435 \u044F\u0432\u043B\u044F\u0435\u0442\u0441\u044F \u043F\u043B\u0435\u0439\u043C\u0435\u0439\u043A\u0435\u0440\u043E\u043C \u0432 Super Smash Bros. Ultimate?", "opts": ["Sans", "Steve", "Doomguy", "Waluigi"], "ans": 3},
-    {"q": "\u0412 \u043A\u0430\u043A\u043E\u0439 \u0438\u0433\u0440\u0435 \u043C\u043E\u0436\u043D\u043E \u043A\u043E\u0440\u043C\u0438\u0442\u044C \u044F\u0431\u043B\u043E\u043A\u0438 \u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u044F\u043C?", "opts": ["Minecraft", "Animal Crossing", "The Sims", "Among Us"], "ans": 0},
-]
 
-POST_POLLS = [
-    {"q": "\u0427\u0435\u043C \u0437\u0430\u043D\u0438\u043C\u0430\u0435\u0448\u044C\u0441\u044F \u043D\u0430 \u0432\u044B\u0445\u043E\u0434\u043D\u044B\u0445?", "opts": ["\u0418\u0433\u0440\u0430\u044E \u0432 \u0438\u0433\u0440\u044B", "\u0421\u043C\u043E\u0442\u0440\u044E \u0430\u043D\u0438\u043C\u0435", "\u0427\u0438\u043B\u043B\u044E", "\u0420\u0430\u0431\u043E\u0442\u0430\u044E"]},
-    {"q": "\u041A\u0430\u043A\u0443\u044E \u0436\u0430\u043D\u0440 \u043F\u0440\u0435\u0434\u043F\u043E\u0447\u0438\u0442\u0430\u0435\u0448\u044C?", "opts": ["RPG", "\u0428\u0443\u0442\u0435\u0440\u044B", "\u0425\u043E\u0440\u0440\u043E\u0440\u044B", "\u0421\u0442\u0440\u0430\u0442\u0435\u0433\u0438\u0438"]},
-    {"q": "\u0427\u0435\u0433\u043E \u0436\u0434\u0451\u0448\u044C \u0431\u043E\u043B\u044C\u0448\u0435 \u0432\u0441\u0435\u0433\u043E?", "opts": ["GTA 6", "The Witcher 4", "Half-Life 3", "\u041D\u043E\u0432\u0443\u044E \u0447\u0430\u0441\u0442\u044C Souls"]},
-    {"q": "\u041D\u0430 \u0447\u0451\u043C \u0438\u0433\u0440\u0430\u0435\u0448\u044C?", "opts": ["PC", "PlayStation", "Xbox", "Nintendo Switch"]},
-]
-
-
-def post_quiz(state):
-    today = time.strftime("%Y-%m-%d")
-    key = f"quiz_{today}"
-    if key in state.get("features_posted", {}):
-        return False
-    q = QUIZZES[int(hashlib.md5(today.encode()).hexdigest(), 16) % len(QUIZZES)]
-    try:
-        r = tg("sendPoll", json={
-            "chat_id": CHANNEL_ID,
-            "question": f"\U0001F3B2 **\u0412\u0438\u043A\u0442\u043E\u0440\u0438\u043D\u0430:** {q['q']}",
-            "options": q["opts"], "type": "quiz",
-            "correct_option_id": q["ans"], "is_anonymous": False,
-            "parse_mode": "Markdown",
-        }, timeout=10)
-        if r:
-            print(f"  Quiz posted")
-            state.setdefault("features_posted", {})[key] = {"time": time.time()}
-            return True
-    except Exception as e:
-        print(f"  Quiz err: {e}")
-    return False
-
-
-def post_poll(state):
-    today = time.strftime("%Y-%m-%d")
-    key = f"poll_{today}"
-    if key in state.get("features_posted", {}):
-        return False
-    p = random.choice(POST_POLLS)
-    try:
-        r = tg("sendPoll", json={
-            "chat_id": CHANNEL_ID, "question": f"\U0001F4CA {p['q']}",
-            "options": p["opts"], "type": "regular", "is_anonymous": False,
-        }, timeout=10)
-        if r:
-            print(f"  Poll posted: {p['q'][:40]}")
-            state.setdefault("features_posted", {})[key] = {"time": time.time()}
-            return True
-    except Exception as e:
-        print(f"  Poll err: {e}")
-    return False
-
-
-def fetch_top_weekly(state):
-    msgs = state.get("posted_msgs", {})
-    now_t = time.time()
-    week_ago = now_t - 604800
-    recent = [(mid, data) for mid, data in msgs.items() if data.get("time", 0) >= week_ago]
-    if len(recent) < 3:
-        return None
-    recent.sort(key=lambda x: -x[1].get("time", 0))
-    lines = ["\U0001F525 **\u0414\u0430\u0439\u0434\u0436\u0435\u0441\u0442 \u043D\u0435\u0434\u0435\u043B\u0438**", ""]
-    for i, (mid, _) in enumerate(recent[:7], 1):
-        link = f"https://t.me/NektarinGaming/{mid}"
-        lines.append(f"{i}. [\u041F\u043E\u0441\u0442 #{mid}]({link})")
-    return "\n".join(lines)
-
-
-def post_feature(feature_key, text, image_url=None, state=None):
-    features_posted = state.setdefault("features_posted", {})
-    if feature_key in features_posted:
-        return None
-    if image_url:
-        try:
-            img = requests.get(image_url, timeout=8)
-            if img.status_code == 200:
-                r = tg("sendPhoto", data={
-                    "chat_id": CHANNEL_ID, "caption": text, "parse_mode": "Markdown",
-                }, files={"photo": ("feature.jpg", img.content, "image/jpeg")}, timeout=15)
-                if r:
-                    features_posted[feature_key] = {"time": time.time()}
-                    print(f"  Feature posted: {feature_key}")
-                    return r.json()["result"]["message_id"]
-        except Exception:
-            pass
-    r = tg("sendMessage", json={
-        "chat_id": CHANNEL_ID, "text": text, "parse_mode": "Markdown",
-    }, timeout=10)
-    if r:
-        features_posted[feature_key] = {"time": time.time()}
-        print(f"  Feature posted (text): {feature_key}")
-        return r.json()["result"]["message_id"]
-    return None
 
 
 REPLY_TEMPLATES = [
@@ -963,24 +699,7 @@ def post_listener_track(state):
     if results:
         path, real_title = results[0]
     if path and os.path.exists(path):
-        ext = os.path.splitext(path)[1] or ".webm"
-        mime_map = {
-            ".mp3": "audio/mpeg", ".m4a": "audio/mp4",
-            ".webm": "audio/webm", ".opus": "audio/opus",
-            ".ogg": "audio/ogg", ".wav": "audio/wav",
-        }
-        mime = mime_map.get(ext.lower(), "audio/mpeg")
-        caption = f"\U0001F3B5 **Трек недели от {escape_md(from_name)}**\n\n_{escape_md(text)}_\n\n_Хочешь предложить свой трек? Пиши в комментарии_ {CHANNEL_SIGNATURE}"
-        with open(path, "rb") as f:
-            r = tg("sendAudio", data={
-                "chat_id": CHANNEL_ID,
-                "title": text[:60],
-                "performer": from_name,
-            }, files={"audio": (f"listener_track{ext}", f, mime)}, timeout=30)
-        try:
-            os.remove(path)
-        except Exception:
-            pass
+        r = send_audio_file(path, text[:60], performer=from_name)
         if not r:
             return False
         del state["listener_track"]
@@ -992,8 +711,6 @@ def post_listener_track(state):
 
 
 def fetch_news():
-    import feedparser
-    from bot.config import RSS_FEEDS
     items = []
     seen_hashes = set()
     for url, source, limit in RSS_FEEDS:
@@ -1025,7 +742,6 @@ def fetch_news():
 
 
 def check_is_live():
-    from bot.config import TWITCH_CLIENT_ID
     try:
         r = requests.post("https://gql.twitch.tv/gql",
             json={

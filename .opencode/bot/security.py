@@ -2,11 +2,11 @@ import os
 import time
 import sys
 import requests
-import ctypes
+import signal
 
 from bot.config import (
     STATE_FILE, LOG_FILE, MAX_IMAGE_SIZE, ADMIN_CHAT_ID, _CFG, _LOCK_FILE,
-    _GLOBAL_STATE, _PROXY_FILE,
+    get_global_state,
 )
 from bot.core import tg, save_state
 
@@ -92,9 +92,6 @@ def security_check(state, force=False):
     elif _CFG.get("bot_token"):
         info.append("Токен из bot_config.json ⚠️ (храни в env)")
 
-    if os.path.exists(_PROXY_FILE):
-        issues.append("bot_proxy.txt содержит креды в открытом виде ⚠️")
-
     state_size = os.path.getsize(STATE_FILE) if os.path.exists(STATE_FILE) else 0
     if state_size > 1024 * 1024:
         issues.append(f"bot_state.json: {state_size // 1024}KB ⚠️")
@@ -140,15 +137,15 @@ def _acquire_lock():
         try:
             with open(_LOCK_FILE, "r") as f:
                 pid = int(f.read().strip())
-            PROCESS_QUERY_INFORMATION = 0x0400
-            h = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_INFORMATION, False, pid)
-            if h:
-                ctypes.windll.kernel32.CloseHandle(h)
+            try:
+                os.kill(pid, 0)
                 print(f"  Lockfile alive (pid {pid}) — another instance running. Exiting.")
                 sys.exit(0)
-            else:
+            except ProcessLookupError:
                 print(f"  Stale lockfile (pid {pid}) — removing.")
                 os.remove(_LOCK_FILE)
+            except PermissionError:
+                print(f"  Lock owned by pid {pid} (no permission) — using anyway.")
         except (ValueError, OSError, Exception):
             try:
                 os.remove(_LOCK_FILE)
@@ -172,7 +169,7 @@ def _release_lock():
 
 
 def _safe_exit(*args):
-    state = _GLOBAL_STATE.get("state")
+    state = get_global_state("state")
     if state is not None:
         try:
             save_state(state)

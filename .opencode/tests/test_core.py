@@ -8,7 +8,6 @@ from bot.core import (
     escape_md, clean, clean_desc, shorten, is_gaming_related,
     extract_game, extract_numbers, extract_platforms, detect_theme,
     title_similarity, is_hot, is_trailer, detect_genre, has_gaming_context,
-    safe_rss_text,
 )
 from bot.security import is_safe_url, detect_image_type
 
@@ -228,17 +227,6 @@ class TestDetectImageType(unittest.TestCase):
     def test_unknown_is_jpg(self):
         ext, mime = detect_image_type(b"\x00\x00\x00\x00")
         self.assertEqual(ext, "jpg")
-
-
-class TestSafeRssText(unittest.TestCase):
-    def test_short_stays(self):
-        self.assertEqual(safe_rss_text("hello", 10), "hello")
-
-    def test_long_cut(self):
-        self.assertEqual(len(safe_rss_text("a" * 100, 10)), 10)
-
-    def test_null_stripped(self):
-        self.assertNotIn("\x00", safe_rss_text("hel\x00lo"))
 
 
 if __name__ == "__main__":
