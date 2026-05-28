@@ -2489,60 +2489,7 @@ def main():
         except Exception as e:
             print(f"  Watched alert err: {e}")
 
-    # --- Scheduled features ---
-
-    # Monday: releases of the week
-    if now_wday == 0:
-        releases = fetch_upcoming_releases()
-        if releases:
-            text = make_releases_post(releases)
-            post_feature(f"releases_{today}", text, state=state)
-
-    # Friday: weekend picks
-    if now_wday == 4:
-        picks_lines = ["\U0001F3AE **\u0427\u0442\u043E \u043F\u043E\u0438\u0433\u0440\u0430\u0442\u044C \u043D\u0430 \u0432\u044B\u0445\u043E\u0434\u043D\u044B\u0445**", ""]
-        if steam_deals:
-            picks_lines.append(f"\U0001F4B0 \u0421\u043A\u0438\u0434\u043A\u0438 \u043D\u0435\u0434\u0435\u043B\u0438 \u0432 Steam:")
-            for d in steam_deals[:5]:
-                picks_lines.append(f"\U0001F539 {d['title']} -{d['discount']}%")
-            picks_lines.append("")
-        if epic_free:
-            picks_lines.append(f"\U0001F381 \u0411\u0435\u0441\u043F\u043B\u0430\u0442\u043D\u043E \u0432 Epic Games:")
-            for g in epic_free:
-                picks_lines.append(f"\U0001F539 {g['title']} \u2014 \u0434\u043E {g['end_date']}")
-            picks_lines.append("")
-        picks_lines.append("_\u0425\u043E\u0440\u043E\u0448\u0438\u0445 \u0432\u044B\u0445\u043E\u0434\u043D\u044B\u0445!_")
-        post_feature(f"weekend_{today}", "\n".join(picks_lines), state=state)
-
-    # Daily: on this day
-    on_day = fetch_on_this_day()
-    if on_day:
-        text, img = make_on_this_day_post(on_day)
-        post_feature(f"onthisday_{today}", text, image_url=img, state=state)
-
-    # Weekly: top sellers (Monday)
-    if now_wday == 0:
-        top = fetch_steam_top_sellers()
-        if top:
-            text = make_top_sellers_post(top)
-            post_feature(f"topsellers_{week}", text, state=state)
-
-    # Weekly: channel stats (Sunday)
-    if now_wday == 6:
-        stats_text = make_channel_stats(state)
-        if stats_text:
-            post_feature(f"stats_{today}", stats_text, state=state)
-        top_text = fetch_top_weekly(state)
-        if top_text:
-            post_feature(f"top_{today}", top_text, state=state)
-
-    # Saturday: poll + listener track
-    if now_wday == 5:
-        post_poll(state)
-        post_listener_track(state)
-
-    # Daily: quiz
-    post_quiz(state)
+    # --- Scheduled features (only anime & rock auto-post, rest via moderation) ---
 
     # 14:00 slot: anime news
     if now_h == 14:
@@ -2727,41 +2674,6 @@ def main():
                     print(f"  Sent for moderation: {best['title'][:60]}")
                     ids[best["id"]] = True
                     content_hashes[str(best["content_hash"])] = True
-
-    # --- Daily digest ---
-    last_digest = state.get("last_digest", "")
-    unseen_count = len(unseen)
-    if today != last_digest and unseen_count >= 5:
-        state["last_digest"] = today
-        digest_posts = unseen[:min(unseen_count, 5)]
-        lines = [f"\U0001F4F0 **Дайджест**", ""]
-        for i, d in enumerate(digest_posts, 1):
-            header = shorten(d["title"], 55)
-            snippet = shorten(d.get("desc", ""), 200)
-            lines.append(f"{i}. **{header}**")
-            if snippet:
-                lines.append(f"   {snippet}")
-            if d.get("link"):
-                lines.append(f"   [\u041F\u043E\u0434\u0440\u043E\u0431\u043D\u0435\u0435]({d['link']})")
-            lines.append("")
-        lines.append("_\u0425\u043E\u0440\u043E\u0448\u0435\u0439 \u0438\u0433\u0440\u043E\u0432\u043E\u0439 \u043D\u0435\u0434\u0435\u043B\u0438!_")
-        text = "\n".join(lines).strip()
-        if len(text) > 1000:
-            text = text[:997] + "..."
-        try:
-            r = tg("sendMessage", json={
-                "chat_id": CHANNEL_ID,
-                "text": text,
-                "parse_mode": "Markdown",
-            }, timeout=10)
-            if r:
-                print(f"  Digest sent ({len(digest_posts)} items)")
-                posted += 1
-        except Exception as e:
-            print(f"  Digest failed: {e}")
-
-    # --- Nikita's recommendation (once per day) ---
-    post_nikita_recommendation(state)
 
     # --- Reply to channel comments ---
     reply_to_comments(state)
