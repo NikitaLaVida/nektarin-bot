@@ -49,6 +49,7 @@ def main():
 
     class Tee:
         def __init__(self):
+            os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
             self.file = open(LOG_FILE, "a", encoding="utf-8")
             self.console = sys.stdout
         def write(self, data):
