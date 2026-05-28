@@ -71,6 +71,11 @@ def main():
     set_global_state("state", state)
     ids = state.get("ids", {})
 
+    ids_cutoff = time.time() - 7 * 86400
+    ids = {k: v for k, v in ids.items() if v.get("time", 0) > ids_cutoff}
+    if len(ids) > 5000:
+        ids = dict(sorted(ids.items(), key=lambda x: -x[1]["time"])[:5000])
+
     # Cleanup temp audio
     tmpdir = os.path.join(os.path.dirname(STATE_FILE), "audio_tmp")
     if os.path.exists(tmpdir):
@@ -468,6 +473,15 @@ if __name__ == "__main__":
                 import traceback
                 err = traceback.format_exc()
                 print(f"Daemon iteration failed: {e}\n{err}")
+                try:
+                    bot_token = _get_token()
+                    if bot_token:
+                        requests.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json={
+                            "chat_id": ADMIN_CHAT,
+                            "text": f"\u26A0 Daemon error:\n\n{str(e)[:200]}",
+                        }, timeout=8)
+                except Exception:
+                    pass
             print(f"Sleeping {interval}s...")
             time.sleep(interval)
     else:

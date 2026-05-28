@@ -340,6 +340,9 @@ def post_anime_news(state):
         return False
     anime_links = state.setdefault("posted_anime_links", [])
     interests = state.get("anime_interests", {})
+    if not interests:
+        interests = {"liked_titles": ["аниме", "аниме-сериал", "аниме фильм", "сезон", "манга"]}
+        state["anime_interests"] = interests
     candidates = []
     for url, source, limit in ANIME_FEEDS:
         try:
