@@ -167,7 +167,7 @@ def main():
     if is_daytime:
         if 14 <= now_h <= 16:
             post_anime_news(state)
-        if now_h in (12, 15, 18):
+        if now_h in (12, 15, 18, 21):
             post_rock_news(state)
 
     save_state(state)
