@@ -275,7 +275,7 @@ def main():
             if comment:
                 marker = "\n\nПодробнее:"
                 if marker in caption:
-                    caption = caption.replace(marker, f"\n\n<i>{comment}</i>{marker}", 1)
+                    caption = caption.replace(marker, f"\n\n<blockquote>{comment}</blockquote>{marker}", 1)
                 else:
                     caption = caption.replace(CHANNEL_SIGNATURE, f"\n\n<i>{comment}</i>{CHANNEL_SIGNATURE}", 1)
             msg_id_posted = send_post(p_title, p_desc, p_link, p_img, p_youtube, p_game, caption)
