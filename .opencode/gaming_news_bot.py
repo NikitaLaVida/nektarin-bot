@@ -165,9 +165,9 @@ def main():
 
     # Anime & rock auto-post by time
     if is_daytime:
-        if now_h in (11, 14, 17):
+        if now_h in (12, 18):
             post_anime_news(state)
-        if now_h in (12, 15, 18, 21):
+        if now_h in (15, 21):
             post_rock_news(state)
 
     save_state(state)
