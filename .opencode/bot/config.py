@@ -46,26 +46,18 @@ STATE_FILE = os.path.join(_DATA_DIR, "bot_state.json")
 LOG_FILE = os.path.join(_DATA_DIR, "bot.log")
 SILENT_HOURS = range(0, 10)
 
-TWITCH_CLIENT_ID = "kimne78kx3ncx6brgo4mv6wki5h1ko"
-
 RSS_FEEDS = [
     ("https://www.igromania.ru/rss/news.xml", "igromania", 10),
     ("https://www.goha.ru/rss/news", "goha", 5),
     ("https://www.goha.ru/rss/videogames", "goha_videogames", 5),
     ("https://www.goha.ru/rss/industry", "goha_industry", 3),
+    ("https://www.goha.ru/rss/articles", "goha_articles", 3),
     ("https://www.playground.ru/rss/news.xml", "playground", 10),
-    ("https://stopgame.ru/news/rss.xml", "stopgame", 7),
-    ("https://kanobu.ru/rss/main.rss", "kanobu", 5),
-    ("https://vgtimes.ru/rss/news/", "vgtimes", 5),
-    ("https://shazoo.ru/rss.xml", "shazoo", 5),
-    # New sources
-    ("https://dtf.ru/rss/all", "dtf", 8),
-    ("https://games.mail.ru/rss/news/", "gamesmail", 8),
+    ("https://kanobu.ru/rss/articles.full.xml", "kanobu", 5),
+    ("https://dtf.ru/rss/all", "dtf", 5),
     ("https://app2top.ru/feed/", "app2top", 5),
-    ("https://rss.cyber.sports.ru/gaming/", "sportsru", 5),
-    ("https://www.cyberforum.ru/games-news/", "cyberforum", 3),
-    ("https://cubiq.ru/feed/", "cubiq", 5),
-    ("https://gameguru.ru/feed/rss/", "gameguru", 5),
+    ("https://habr.com/ru/rss/hubs/games/news/", "habr_games", 5),
+    ("https://mmorpg-blog.ru/feed/", "mmorpgblog", 3),
 ]
 
 ANIME_FEEDS = [

@@ -199,7 +199,7 @@ def pinterest_image(game_name):
         }
         r = _PINTEREST_SESSION.post(
             'https://www.pinterest.com/resource/SearchResource/get/',
-            data=post_data, timeout=15,
+            data=post_data, timeout=5,
         )
         if r.status_code != 200:
             _PINTEREST_SESSION = None

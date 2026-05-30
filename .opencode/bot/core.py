@@ -17,7 +17,7 @@ from bot.config import (
     CHANNEL_SIGNATURE, THEME_WORDS, GENRE_TAGS, PLATFORMS,
     GAMING_SIGNAL_WORDS, NON_GAMING_TITLE_WORDS,
     GAME_DEDUP_HOURS, TITLE_DEDUP_HOURS, TITLE_DEDUP_MIN_WORDS,
-    WIKI_UA, _CFG, ADMIN_CHAT, ADMIN_CHAT_ID,
+    WIKI_UA, _CFG, ADMIN_CHAT_ID,
     CHANNEL_ID, BOT_TOKEN, _SEP, TG_PROXY as TG_PROXY_VAL,
 )
 
@@ -49,10 +49,11 @@ def log(msg):
         pass
 
 
-def escape_md(text):
+def escape_html(text):
     text = str(text)
-    for ch in ("_", "*", "`", "[", "]", "(", ")", "~", ">", "#", "+", "-", "=", "|", "!", "%", "@", "."):
-        text = text.replace(ch, "\\" + ch)
+    text = text.replace("&", "&amp;")
+    text = text.replace("<", "&lt;")
+    text = text.replace(">", "&gt;")
     return text
 
 
@@ -99,6 +100,7 @@ def translate_en_ru(text):
         return result
     except Exception as e:
         print(f"  Translation error: {e}")
+        _TRANSLATE_CACHE[key] = text
         return text
 
 
@@ -224,36 +226,87 @@ def tg_get(method, params=None):
         r = requests.get(f"{TG_API}{token}/{method}", params=params, timeout=10, proxies=proxies)
         if r.status_code == 200:
             return r.json()
+        print(f"  TG GET {method} failed ({r.status_code}): {r.text[:100]}")
     except Exception as e:
         print(f"  TG GET {method} err: {e}")
     return None
 
 
-def check_user_reply(state, reply_to_msg_id):
+def process_updates(state, pending_by_msg_id):
+    bot_id = state.get("_bot_id", 0)
+    linked_group = state.get("_linked_chat_id", 0)
+    if not bot_id:
+        try:
+            me = tg("getMe", json={})
+            if me:
+                bot_id = me.json()["result"]["id"]
+                state["_bot_id"] = bot_id
+        except Exception:
+            pass
+    if not linked_group:
+        try:
+            chat_info = tg("getChat", json={"chat_id": CHANNEL_ID})
+            if chat_info:
+                data = chat_info.json()
+                linked_group = data.get("result", {}).get("linked_chat_id")
+                if linked_group:
+                    state["_linked_chat_id"] = linked_group
+        except Exception:
+            pass
+    if not pending_by_msg_id and not linked_group:
+        return {}
     offset = state.get("moderation_offset", 0)
     result = tg_get("getUpdates", {"offset": offset, "timeout": 0})
     if not result:
-        return None
+        return {}
+    replies = {}
+    target_set = set(pending_by_msg_id) if pending_by_msg_id else set()
     for update in result.get("result", []):
         upd_id = update["update_id"]
         msg = update.get("message", {})
-        if msg.get("chat", {}).get("id") != ADMIN_CHAT_ID:
+        if not msg:
             state["moderation_offset"] = upd_id + 1
             continue
-        reply = msg.get("reply_to_message", {})
-        if reply.get("message_id") == reply_to_msg_id:
-            state["moderation_offset"] = upd_id + 1
-            return msg.get("text", "").strip() or None
+        from_id = msg.get("from", {}).get("id", 0)
+        chat_id = msg.get("chat", {}).get("id")
+        text = msg.get("text", "").strip()
+        if from_id == ADMIN_CHAT_ID:
+            reply = msg.get("reply_to_message", {})
+            reply_to = reply.get("message_id")
+            if reply_to in target_set:
+                replies[reply_to] = text or None
+                state["moderation_offset"] = upd_id + 1
+                continue
+        if linked_group and chat_id == linked_group and text and from_id != bot_id:
+            text_lower = text.lower()
+            track_pats = [r" — ", r" – ", r" - ", r"–", r"—", r"youtube\.com", r"youtu\.be"]
+            is_track = any(re.search(p, text) for p in track_pats) or \
+                text_lower.startswith("трек ") or \
+                text_lower.startswith("песня ") or \
+                text_lower.startswith("музыка ")
+            if is_track:
+                state["listener_track"] = {
+                    "text": text,
+                    "from": msg.get("from", {}).get("first_name", "Подписчик"),
+                    "time": time.time(),
+                    "week": time.strftime("%Y-W%V"),
+                }
+                print(f"  Listener track saved: {text[:60]}")
+            tg("sendMessage", json={
+                "chat_id": linked_group,
+                "text": random.choice(REPLY_TEMPLATES),
+                "reply_to_message_id": msg.get("message_id"),
+            }, timeout=10)
         state["moderation_offset"] = upd_id + 1
-    return None
+    return replies
 
 
 def send_error(msg):
     try:
         tg("sendMessage", json={
             "chat_id": ADMIN_CHAT_ID,
-            "text": f"\U0001F6A8 **Bot Error**\n\n{msg[:500]}",
-            "parse_mode": "Markdown",
+            "text": f"\U0001F6A8 <b>Bot Error</b>\n\n{escape_html(msg[:500])}",
+            "parse_mode": "HTML",
         }, timeout=8)
     except Exception:
         pass
@@ -363,7 +416,7 @@ def pick(seq):
 
 
 def smart_comment(theme, game, title):
-    kw = escape_md(game) if game else ""
+    kw = escape_html(game) if game else ""
     ctx = {
         "sales": [f"Продажи {kw} бьют рекорды!", f"Народ раскупает {kw}", f"{kw} — успех!"],
         "delay": [f"Релиз {kw} отложили. Ну такое.", f"{kw} задерживается. Снова.", f"Перенос {kw}. Ну вот опять."],
@@ -431,6 +484,15 @@ THEME_HASHTAGS = {
     "announce": "#анонс",
     "generic": "#игровыеновости",
 }
+
+REPLY_TEMPLATES = [
+    "В точку! \U0001F44D", "Согласен на все 100%",
+    "Мнение засчитано \U0001F91D", "Спорно, но достойно уважения",
+    "Инсайдерская информация подтверждает", "Добавлю себе в цитатник",
+    "Ты читаешь мои мысли", "Лучший комментарий недели",
+    "Проверял — так и есть", "Ты слишком далеко зашёл \U0001F480",
+    "Бот молчит — значит одобряет \u2705", "Задокументировано в архивах канала",
+]
 
 
 def embed_link(text, link):
@@ -522,8 +584,9 @@ def send_audio_file(path, title, performer=None, chat_id=None):
     with open(path, "rb") as f:
         r = tg("sendAudio", data=payload,
                files={"audio": (f"audio{ext}", f, mime)}, timeout=30)
-    try:
-        os.remove(path)
-    except Exception:
-        pass
+    if r:
+        try:
+            os.remove(path)
+        except Exception:
+            pass
     return r

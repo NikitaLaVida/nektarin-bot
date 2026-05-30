@@ -81,7 +81,7 @@ SECURITY_STATE_KEY = "_last_security_check"
 def security_check(state, force=False):
     now = time.time()
     last = state.get(SECURITY_STATE_KEY, 0)
-    if not force and now - last < 86400:
+    if not force and now - last < 43200:
         return
     issues = []
     info = []
@@ -113,11 +113,11 @@ def security_check(state, force=False):
     else:
         info.append(f"Log: {log_size:.1f}MB ✅")
 
-    text = "\U0001F6E1 **Проверка безопасности**"
+    text = "\U0001F6E1 <b>Проверка безопасности</b>"
     if issues:
-        text += f"\n\n\U0001F525 **Проблемы:**\n" + "\n".join(f"\U0001F539 {i}" for i in issues)
+        text += f"\n\n\U0001F525 <b>Проблемы:</b>\n" + "\n".join(f"\U0001F539 {i}" for i in issues)
     if info:
-        text += f"\n\n\U0001F4A1 **Статус:**\n" + "\n".join(f"\U0001F539 {i}" for i in info)
+        text += f"\n\n\U0001F4A1 <b>Статус:</b>\n" + "\n".join(f"\U0001F539 {i}" for i in info)
     if not issues:
         text += "\n\n\U00002705 Всё чисто!"
 
@@ -125,6 +125,7 @@ def security_check(state, force=False):
         tg("sendMessage", json={
             "chat_id": ADMIN_CHAT_ID,
             "text": text,
+            "parse_mode": "HTML",
         }, timeout=10)
     except Exception as e:
         print(f"  Security check send err: {e}")
@@ -137,6 +138,9 @@ def _acquire_lock():
         try:
             with open(_LOCK_FILE, "r") as f:
                 pid = int(f.read().strip())
+            if pid == os.getpid():
+                print(f"  Lock already ours (pid {pid}), continuing")
+                return
             try:
                 os.kill(pid, 0)
                 print(f"  Lockfile alive (pid {pid}) — another instance running. Exiting.")

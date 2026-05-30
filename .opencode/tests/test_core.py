@@ -5,30 +5,25 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from bot.core import (
-    escape_md, clean, clean_desc, shorten, is_gaming_related,
+    escape_html, clean, clean_desc, shorten, is_gaming_related,
     extract_game, extract_numbers, extract_platforms, detect_theme,
     title_similarity, is_hot, is_trailer, detect_genre, has_gaming_context,
 )
 from bot.security import is_safe_url, detect_image_type
 
 
-class TestEscapeMd(unittest.TestCase):
-    def test_basic_markdown(self):
-        self.assertEqual(escape_md("hello"), "hello")
+class TestEscapeHtml(unittest.TestCase):
+    def test_plain_text(self):
+        self.assertEqual(escape_html("hello"), "hello")
 
-    def test_underscore(self):
-        self.assertEqual(escape_md("_italic_"), "\\_italic\\_")
+    def test_ampersand(self):
+        self.assertEqual(escape_html("a&b"), "a&amp;b")
 
-    def test_asterisk(self):
-        self.assertEqual(escape_md("*bold*"), "\\*bold\\*")
-
-    def test_all_chars(self):
-        result = escape_md("_*`[]()~>#+-=|!%@.")
-        for ch in "_*`[]()~>#+-=|!%@.":
-            self.assertIn("\\" + ch, result)
+    def test_lt_gt(self):
+        self.assertEqual(escape_html("<b>bold</b>"), "&lt;b&gt;bold&lt;/b&gt;")
 
     def test_non_string(self):
-        self.assertEqual(escape_md(42), "42")
+        self.assertEqual(escape_html(42), "42")
 
 
 class TestClean(unittest.TestCase):

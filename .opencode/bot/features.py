@@ -3,29 +3,30 @@ import re
 import time
 import random
 import hashlib
+import glob
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 import feedparser
 from datetime import datetime, timezone
 
 from bot.config import (
     CHANNEL_ID, STATE_FILE, CHANNEL_SIGNATURE, ADMIN_CHAT,
+    ADMIN_CHAT_ID,
     ANIME_FEEDS, ROCK_FEEDS, ROCK_ARTISTS, ROCK_TRACKS,
-    MAX_DESC_LEN, MODERATION_TTL, MODERATION_INTERVAL,
-    WIKI_UA, GAME_DEDUP_HOURS,
-    TITLE_DEDUP_HOURS, TITLE_DEDUP_MIN_WORDS, TITLE_SIMILARITY_THRESHOLD,
-    MAX_CAPTION_LEN, MAX_IMAGE_SIZE, TWITCH_CLIENT_ID, _SEP,
+    MAX_DESC_LEN,
+    WIKI_UA,
+    MAX_CAPTION_LEN, MAX_IMAGE_SIZE, _SEP,
     RSS_FEEDS,
 )
 from bot.core import (
-    tg, tg_get, save_state, escape_md, clean, clean_desc,
+    tg, save_state, escape_html, clean, clean_desc,
     is_hot, is_trailer, translate_en_ru, shorten,
     extract_game, extract_numbers, extract_platforms,
     detect_genre, detect_theme, is_gaming_related,
-    get_recent_game_names, get_recent_titles, title_similarity,
-    has_gaming_context, send_error, load_state, log,
-    extract_youtube, is_hd, pick, smart_comment, send_audio_file,
+    get_recent_game_names, send_error,
+    extract_youtube, is_hd, pick, send_audio_file,
     COMMENTARIES, THEME_EMOJI, THEME_HASHTAGS,
-    embed_link, TEMPLATES,
+    TEMPLATES,
 )
 from bot.security import safe_download_image, detect_image_type, is_safe_url
 from bot.images import find_image, rss_image, find_post_image
@@ -34,11 +35,11 @@ from bot.images import find_image, rss_image, find_post_image
 def make_caption(title, desc, link, game=None):
     if not desc:
         desc = title
-    title = escape_md(title)
-    desc = escape_md(desc)
+    title = escape_html(title)
+    desc = escape_html(desc)
     if not game:
         game = extract_game(title)
-    game = escape_md(game)
+    game = escape_html(game)
     numbers = extract_numbers(desc)
     platforms = extract_platforms(title + " " + desc)
     genre = detect_genre(desc)
@@ -51,9 +52,10 @@ def make_caption(title, desc, link, game=None):
     caption += CHANNEL_SIGNATURE
     hashtag = THEME_HASHTAGS.get(theme, "#игровыеновости")
     caption += f"\n{hashtag}"
+    if genre:
+        caption += f" #{genre}"
     if len(caption) > MAX_CAPTION_LEN:
         caption = caption[:MAX_CAPTION_LEN - 3] + "..."
-        caption = re.sub(r'(\*{1,2}|_{1,2}|`+)\s*$', '', caption)
     return caption
 
 
@@ -65,7 +67,7 @@ def send_post(title, desc, link, img_url, youtube_url=None, game=None, custom_ca
             text = f"{caption}\n\n{youtube_url}"
             r = tg("sendMessage", json={
                 "chat_id": CHANNEL_ID, "text": text,
-                "parse_mode": "Markdown", "disable_web_page_preview": False,
+                "parse_mode": "HTML", "disable_web_page_preview": False,
             }, timeout=15)
             if r:
                 msg_id = r.json()["result"]["message_id"]
@@ -82,7 +84,7 @@ def send_post(title, desc, link, img_url, youtube_url=None, game=None, custom_ca
                 files = {"photo": (f"image.{img_ext}", img_bytes, img_mime)}
                 payload = {
                     "chat_id": CHANNEL_ID, "caption": caption,
-                    "parse_mode": "Markdown",
+                    "parse_mode": "HTML",
                 }
                 r = tg("sendPhoto", data=payload, files=files, timeout=20)
                 if r:
@@ -93,7 +95,7 @@ def send_post(title, desc, link, img_url, youtube_url=None, game=None, custom_ca
         except Exception as e:
             print(f"  Image err: {e}")
     r = tg("sendMessage", json={
-        "chat_id": CHANNEL_ID, "text": caption, "parse_mode": "Markdown",
+        "chat_id": CHANNEL_ID, "text": caption, "parse_mode": "HTML",
     }, timeout=10)
     if r:
         msg_id = r.json()["result"]["message_id"]
@@ -103,26 +105,37 @@ def send_post(title, desc, link, img_url, youtube_url=None, game=None, custom_ca
     return None
 
 
-def send_live_notification(title, game):
-    text = (
-        f"\U0001F534 **Я В ЭФИРЕ!**\n\n"
-        f"**{escape_md(title)}**\n"
-        f"\u2500" * 20 + "\n"
-        f"Игра: **{escape_md(game)}**\n\n"
-        f"Смотреть: https://twitch.tv/NektarinGaming"
-    )
-    try:
-        r = tg("sendMessage", json={
-            "chat_id": CHANNEL_ID, "text": text,
-            "parse_mode": "Markdown", "disable_web_page_preview": False,
-        }, timeout=10)
-        if r:
-            print(f"  Live notification sent: {title[:50]}")
-            return True
-        print(f"  Live notification failed: {r.text[:100]}")
-    except Exception as e:
-        print(f"  Live notification err: {e}")
-    return False
+def score_news_item(item, ids, content_hashes, recent_games):
+    if item["id"] in ids:
+        return None
+    if str(item.get("content_hash", "")) in content_hashes:
+        return None
+    score = 0
+    desc_len = len(item.get("desc", ""))
+    score += min(desc_len / 5, 20)
+    if extract_numbers(item.get("desc", "")):
+        score += 5
+    if extract_platforms(item["title"] + " " + item.get("desc", "")):
+        score += 3
+    game = extract_game(item["title"])
+    game_lower = game.lower()
+    if not is_gaming_related(item["title"], item.get("desc", "")):
+        score -= 50
+    elif game and len(game_lower) > 3:
+        score += 10
+    if game_lower and len(game_lower) > 3 and game_lower in recent_games:
+        score -= 500
+    theme = detect_theme(item["title"], item.get("desc", ""))
+    if is_hot(item):
+        score += 50
+    if is_trailer(item["title"]):
+        score += 10
+    if item.get("youtube_url"):
+        score += 5
+    item["_score"] = score
+    item["_game"] = game
+    item["_theme"] = theme
+    return item
 
 
 # ---- Free Games ----
@@ -224,32 +237,33 @@ def fetch_gog_free_games():
 
 
 def send_deals_batch(steam_deals, epic_free, gog_free):
-    lines = ["\U0001F4F0 **Акции и раздачи**", ""]
+    lines = ["\U0001F4F0 <b>Акции и раздачи</b>", ""]
     count = 0
     if epic_free:
-        lines.append("\U0001F381 **Epic Games**")
+        lines.append("\U0001F381 <b>Epic Games</b>")
         for g in epic_free:
             if g.get("url"):
-                lines.append(f"\U0001F539 [{escape_md(g['title'])}]({g['url']})")
+                lines.append(f'\U0001F539 <a href="{g["url"]}">{escape_html(g["title"])}</a>')
             else:
-                lines.append(f"\U0001F539 {escape_md(g['title'])}")
+                lines.append(f"\U0001F539 {escape_html(g['title'])}")
             if g.get("end_date"):
                 lines.append(f"   \U0001F512 до {g['end_date']}")
             count += 1
         lines.append("")
     if gog_free:
-        lines.append("\U0001F4F0 **GOG**")
+        lines.append("\U0001F4F0 <b>GOG</b>")
         for g in gog_free:
             if g.get("url"):
-                lines.append(f"\U0001F539 [{escape_md(g['title'])}]({g['url']})")
+                lines.append(f'\U0001F539 <a href="{g["url"]}">{escape_html(g["title"])}</a>')
             else:
-                lines.append(f"\U0001F539 {escape_md(g['title'])}")
+                lines.append(f"\U0001F539 {escape_html(g['title'])}")
             count += 1
         lines.append("")
     if steam_deals:
-        lines.append("\U0001F3AE **Steam**")
+        lines.append("\U0001F3AE <b>Steam</b>")
         for d in steam_deals:
-            lines.append(f"\U0001F539 [{escape_md(d['title'])} -{d['discount']}%](https://store.steampowered.com/app/{d['appid']}/)")
+            app_link = f'https://store.steampowered.com/app/{d["appid"]}/'
+            lines.append(f'\U0001F539 <a href="{app_link}">{escape_html(d["title"])} -{d["discount"]}%</a>')
             lines.append(f"   \u20BD {d['final_price']:.0f} вместо {d['original_price']:.0f}")
             if d.get("expires"):
                 lines.append(f"   \U0001F512 до {d['expires']}")
@@ -262,7 +276,7 @@ def send_deals_batch(steam_deals, epic_free, gog_free):
         text = text[:3997] + "..."
     r = tg("sendMessage", json={
         "chat_id": CHANNEL_ID, "text": text,
-        "parse_mode": "Markdown", "disable_web_page_preview": False,
+        "parse_mode": "HTML", "disable_web_page_preview": False,
     }, timeout=12)
     if r:
         msg_id = r.json()["result"]["message_id"]
@@ -376,7 +390,7 @@ def post_anime_news(state):
             if img_bytes and is_hd(img_bytes):
                 ext, mime = detect_image_type(img_bytes)
                 r = tg("sendPhoto", data={
-                    "chat_id": CHANNEL_ID, "caption": caption, "parse_mode": "Markdown",
+                    "chat_id": CHANNEL_ID, "caption": caption, "parse_mode": "HTML",
                 }, files={"photo": (f"anime.{ext}", img_bytes, mime)}, timeout=15)
                 if r:
                     msg_id = r.json()["result"]["message_id"]
@@ -384,7 +398,7 @@ def post_anime_news(state):
             pass
     if not msg_id:
         r = tg("sendMessage", json={
-            "chat_id": CHANNEL_ID, "text": caption, "parse_mode": "Markdown",
+            "chat_id": CHANNEL_ID, "text": caption, "parse_mode": "HTML",
         }, timeout=10)
         if r:
             msg_id = r.json()["result"]["message_id"]
@@ -392,6 +406,11 @@ def post_anime_news(state):
         state["anime_posted"] = today
         if link not in anime_links:
             anime_links.append(link)
+        posted_msgs = state.setdefault("posted_msgs", {})
+        posted_msgs[str(msg_id)] = {
+            "title": title, "game": "",
+            "time": time.time(), "source": source,
+        }
         print(f"  Anime news posted: {title[:50]}")
         return True
     return False
@@ -436,16 +455,21 @@ def download_audio(query, output_dir, max_results=1):
             "outtmpl": os.path.join(output_dir, "%(id)s.%(ext)s"),
             "quiet": True, "no_warnings": True,
             "default_search": "ytsearch",
-            "max_filesize": 15000000,
+            "max_filesize": 45000000,
         }
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(f"ytsearch{max_results}:{query}", download=True)
             entries = info.get("entries", [info])
             results = []
             for entry in entries:
-                fn = ydl.prepare_filename(entry)
+                video_id = entry.get("id", "")
                 title = entry.get("title", query)
-                if os.path.exists(fn):
+                if not video_id:
+                    continue
+                pattern = os.path.join(output_dir, f"{video_id}.*")
+                matches = glob.glob(pattern)
+                if matches:
+                    fn = matches[0]
                     results.append((fn, title))
             if results:
                 return results
@@ -501,16 +525,16 @@ def post_rock_news(state):
                 artists_str = ", ".join(matched[:3])
                 ru_title = translate_en_ru(title)
                 ru_desc = translate_en_ru(shorten(desc, MAX_DESC_LEN))
-                safe_title = escape_md(ru_title)
-                safe_desc = escape_md(ru_desc)
+                safe_title = escape_html(ru_title)
+                safe_desc = escape_html(ru_desc)
                 tags = " #" + " #".join(a.replace(" ", "_") for a in matched[:3])
                 artist = matched[0]
                 album_name = extract_album_name(title, desc)
                 album_line = ""
                 if album_name:
-                    album_line = f" — новый альбом «{escape_md(album_name)}»"
+                    album_line = f" — новый альбом «{escape_html(album_name)}»"
                     print(f"  Album detected: {album_name}")
-                caption = f"\U0001F3B8 **{safe_title}**{album_line}\n\n{safe_desc}\n\n[\u041F\u043E\u0434\u0440\u043E\u0431\u043D\u0435\u0435]({link})"
+                caption = f"\U0001F3B8 <b>{safe_title}</b>{album_line}\n\n{safe_desc}\n\n<a href=\"{link}\">\u041F\u043E\u0434\u0440\u043E\u0431\u043D\u0435\u0435</a>"
                 caption += f"{CHANNEL_SIGNATURE}\n{tags}"
                 caption_photo = None
                 if album_name:
@@ -533,13 +557,13 @@ def post_rock_news(state):
                 if caption_photo:
                     ext, mime = detect_image_type(caption_photo)
                     r = tg("sendPhoto", data={
-                        "chat_id": CHANNEL_ID, "caption": caption, "parse_mode": "Markdown",
+                        "chat_id": CHANNEL_ID, "caption": caption, "parse_mode": "HTML",
                     }, files={"photo": (f"rock.{ext}", caption_photo, mime)}, timeout=15)
                     if r:
                         msg_id = r.json()["result"]["message_id"]
                 if not msg_id:
                     r = tg("sendMessage", json={
-                        "chat_id": CHANNEL_ID, "text": caption, "parse_mode": "Markdown",
+                        "chat_id": CHANNEL_ID, "text": caption, "parse_mode": "HTML",
                     }, timeout=10)
                     if r:
                         msg_id = r.json()["result"]["message_id"]
@@ -553,15 +577,24 @@ def post_rock_news(state):
                             results = download_audio(tquery, tmpdir)
                             path = None
                             if results:
-                                path, real_title = results[0]
+                                path, _ = results[0]
                             if path and os.path.exists(path):
                                 r = send_audio_file(path, tname, performer=artist.title())
                                 if r:
                                     print(f"  Audio sent: {tname} (msg#{r.json()['result']['message_id']})")
+                                else:
+                                    print(f"  Audio send failed for {tname}")
+                            else:
+                                print(f"  Audio download failed for {tname}")
                 if msg_id:
                     state["rock_posted"] = today
                     if link not in rocks_links:
                         rocks_links.append(link)
+                    posted_msgs = state.setdefault("posted_msgs", {})
+                    posted_msgs[str(msg_id)] = {
+                        "title": title, "game": artist,
+                        "time": time.time(), "source": source,
+                    }
                     print(f"  Rock news posted: {title[:50]} [{artists_str}]")
                     return True
         except Exception as e:
@@ -588,108 +621,63 @@ def make_channel_stats(state):
         src = data.get("source", "other")
         source_counts[src] = source_counts.get(src, 0) + 1
     top_sources = sorted(source_counts.items(), key=lambda x: -x[1])[:3]
-    lines = ["\U0001F4CA **Статистика недели**", ""]
-    lines.append(f"\U0001F4F0 Всего постов: **{total_week}**")
+    lines = ["\U0001F4CA <b>Статистика недели</b>", ""]
+    lines.append(f"\U0001F4F0 Всего постов: <b>{total_week}</b>")
     if top_games:
         lines.append("")
-        lines.append("\U0001F3AE **Топ игр:**")
+        lines.append("\U0001F3AE <b>Топ игр:</b>")
         for g, c in top_games:
             lines.append(f"\U0001F539 {g} — {c}")
     if top_sources:
         lines.append("")
-        lines.append("\U0001F4E1 **Источники:**")
+        lines.append("\U0001F4E1 <b>Источники:</b>")
         for s, c in top_sources:
             lines.append(f"\U0001F539 {s} — {c}")
     lines.append("")
-    lines.append("_Спасибо, что читаете!_")
+    lines.append("<i>Спасибо, что читаете!</i>")
     return "\n".join(lines)
 
 
 
 
 
-REPLY_TEMPLATES = [
-    "В точку! \U0001F44D", "Согласен на все 100%",
-    "Мнение засчитано \U0001F91D", "Спорно, но достойно уважения",
-    "Инсайдерская информация подтверждает", "Добавлю себе в цитатник",
-    "Ты читаешь мои мысли", "Лучший комментарий недели",
-    "Проверял — так и есть", "Ты слишком далеко зашёл \U0001F480",
-    "Бот молчит — значит одобряет \u2705", "Задокументировано в архивах канала",
-]
-
-
-def reply_to_comments(state):
-    bot_id = state.get("_bot_id", 0)
-    if not bot_id:
-        try:
-            me = tg("getMe", json={})
-            if me:
-                bot_id = me.json()["result"]["id"]
-                state["_bot_id"] = bot_id
-        except Exception:
-            pass
-    try:
-        chat_info = tg("getChat", json={"chat_id": CHANNEL_ID})
-        if not chat_info:
-            return 0
-        data = chat_info.json()
-        linked_group = data.get("result", {}).get("linked_chat_id")
-        if not linked_group:
-            return 0
-    except Exception:
-        return 0
-    offset_key = "comment_offset"
-    offset = state.get(offset_key, 0)
-    replied = 0
-    try:
-        updates = tg("getUpdates", json={
-            "offset": offset, "timeout": 0, "allowed_updates": ["message"],
-        })
-        if updates:
-            results = updates.json().get("result", [])
-            for upd in results:
-                msg = upd.get("message", {})
-                chat_id = msg.get("chat", {}).get("id")
-                if chat_id != linked_group:
-                    offset = upd["update_id"] + 1
-                    continue
-                text = msg.get("text", "").strip()
-                from_id = msg.get("from", {}).get("id", 0)
-                if not text or from_id == bot_id:
-                    offset = upd["update_id"] + 1
-                    continue
-                text_lower = text.lower()
-                track_patterns = [
-                    r" — ", r" – ", r" - ", r"–", r"—",
-                    r"youtube\.com", r"youtu\.be",
-                ]
-                is_track_suggestion = any(re.search(p, text) for p in track_patterns) or \
-                    text_lower.startswith("трек ") or \
-                    text_lower.startswith("песня ") or \
-                    text_lower.startswith("музыка ")
-                if is_track_suggestion:
-                    state["listener_track"] = {
-                        "text": text,
-                        "from": msg.get("from", {}).get("first_name", "Подписчик"),
-                        "time": time.time(),
-                        "week": time.strftime("%Y-W%V"),
-                    }
-                    print(f"  Listener track saved: {text[:60]}")
-                reply = random.choice(REPLY_TEMPLATES)
-                tg("sendMessage", json={
-                    "chat_id": linked_group,
-                    "text": reply,
-                    "reply_to_message_id": msg.get("message_id"),
-                }, timeout=10)
-                replied += 1
-                offset = upd["update_id"] + 1
-    except Exception as e:
-        print(f"  Comment reply err: {e}")
-        return replied
-    state[offset_key] = offset
-    if replied:
-        print(f"  Replied to {replied} comments")
-    return replied
+def send_daily_admin_stats(state):
+    today = time.strftime("%Y-%m-%d")
+    last = state.get("last_daily_admin_stats", "")
+    if last == today:
+        return False
+    all_msgs = state.get("posted_msgs", {})
+    now_t = time.time()
+    day_ago = now_t - 86400
+    recent = [(mid, data) for mid, data in all_msgs.items() if data.get("time", 0) >= day_ago]
+    total_today = len(recent)
+    source_counts = {}
+    for mid, data in recent:
+        src = data.get("source", "other")
+        source_counts[src] = source_counts.get(src, 0) + 1
+    pending = state.get("pending_moderation", [])
+    lines = ["\U0001F4CB <b>Статистика дня</b>", ""]
+    lines.append(f"\U0001F4F0 Постов сегодня: <b>{total_today}</b>")
+    if source_counts:
+        lines.append("")
+        lines.append("\U0001F4E1 <b>Источники:</b>")
+        for s, c in sorted(source_counts.items(), key=lambda x: -x[1])[:5]:
+            lines.append(f"\U0001F539 {s} — {c}")
+    if pending:
+        lines.append("")
+        lines.append(f"\U0001F514 В модерации: <b>{len(pending)}</b>")
+    lines.append("")
+    lines.append("<i>Бот работает в штатном режиме</i>")
+    text = "\n".join(lines)
+    r = tg("sendMessage", json={
+        "chat_id": ADMIN_CHAT_ID,
+        "text": text, "parse_mode": "HTML",
+    }, timeout=10)
+    if r:
+        state["last_daily_admin_stats"] = today
+        print(f"  Daily admin stats sent ({total_today} posts)")
+        return True
+    return False
 
 
 def post_listener_track(state):
@@ -726,52 +714,49 @@ def post_listener_track(state):
 
 
 def fetch_news():
-    items = []
-    seen_hashes = set()
-    for url, source, limit in RSS_FEEDS:
-        print(f"Loading: {url}")
+    def fetch_one(url, source, limit):
+        entries = []
         try:
             resp = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
             feed = feedparser.parse(resp.content)
+            seen = set()
             for entry in feed.entries[:limit]:
                 raw_desc = entry.get("description", "") or ""
                 title = clean(entry.get("title", ""))
-                youtube_url = extract_youtube(raw_desc)
                 desc = clean_desc(raw_desc)
                 link = entry.get("link", "")
                 norm = re.sub(r"[^a-zа-яё0-9]", "", (title + desc[:100]).lower())
                 h = hashlib.md5(norm.encode()).hexdigest()
-                if h in seen_hashes:
+                if h in seen:
                     continue
-                seen_hashes.add(h)
-                items.append({
+                seen.add(h)
+                entries.append({
                     "title": title, "desc": desc, "link": link,
-                    "source": source, "youtube_url": youtube_url,
+                    "source": source, "youtube_url": extract_youtube(raw_desc),
                     "rss_img": rss_image(entry),
                     "id": "".join(c for c in link if c.isalnum()),
                     "content_hash": h,
                 })
-            print(f"  OK: {len(feed.entries)} items")
+            print(f"  {source}: {len(feed.entries)} items")
         except Exception as e:
-            print(f"  Error loading {url}: {e}")
+            print(f"  {source} error: {e}")
+        return entries
+
+    all_items = []
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        futures = [pool.submit(fetch_one, url, s, lim) for url, s, lim in RSS_FEEDS]
+        for fut in as_completed(futures):
+            all_items.extend(fut.result())
+
+    seen_hashes = set()
+    items = []
+    for entry in all_items:
+        h = entry["content_hash"]
+        if h in seen_hashes:
+            continue
+        seen_hashes.add(h)
+        items.append(entry)
     return items
 
 
-def check_is_live():
-    try:
-        r = requests.post("https://gql.twitch.tv/gql",
-            json={
-                "query": "query($login: String, timeout=6) {user(login: $login) {stream {title type viewersCount game {name}}}}",
-                "variables": {"login": "NektarinGaming"}
-            },
-            headers={"Client-ID": TWITCH_CLIENT_ID, "User-Agent": "Mozilla/5.0"},
-            timeout=8)
-        if r.status_code == 200:
-            data = r.json()
-            s = data.get("data", {}).get("user", {}).get("stream")
-            if s:
-                return s.get("title", ""), s.get("game", {}).get("name", "unknown")
-        return None
-    except Exception as e:
-        print(f"  Twitch check error: {e}")
-    return None
+
