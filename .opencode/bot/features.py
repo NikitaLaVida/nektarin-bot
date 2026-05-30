@@ -16,7 +16,7 @@ from bot.config import (
     MAX_DESC_LEN,
     WIKI_UA,
     MAX_CAPTION_LEN, MAX_IMAGE_SIZE, _SEP,
-    RSS_FEEDS,
+    RSS_FEEDS, get_global_state,
 )
 from bot.core import (
     tg, save_state, escape_html, clean, clean_desc,
@@ -132,6 +132,8 @@ def score_news_item(item, ids, content_hashes, recent_games):
         score += 10
     if item.get("youtube_url"):
         score += 5
+    if theme == "rumor":
+        score -= 15
     item["_score"] = score
     item["_game"] = game
     item["_theme"] = theme
@@ -714,32 +716,49 @@ def post_listener_track(state):
 
 
 def fetch_news():
+    _state = get_global_state("state", {})
+    _feed_errors = _state.get("feed_errors", {})
+
     def fetch_one(url, source, limit):
+        src_err = _feed_errors.get(source, {})
+        if src_err.get("count", 0) > 3 and time.time() - src_err.get("time", 0) < 3600:
+            print(f"  {source}: skipped (circuit breaker, {src_err['count']} errors)")
+            return []
         entries = []
-        try:
-            resp = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
-            feed = feedparser.parse(resp.content)
-            seen = set()
-            for entry in feed.entries[:limit]:
-                raw_desc = entry.get("description", "") or ""
-                title = clean(entry.get("title", ""))
-                desc = clean_desc(raw_desc)
-                link = entry.get("link", "")
-                norm = re.sub(r"[^a-zа-яё0-9]", "", (title + desc[:100]).lower())
-                h = hashlib.md5(norm.encode()).hexdigest()
-                if h in seen:
-                    continue
-                seen.add(h)
-                entries.append({
-                    "title": title, "desc": desc, "link": link,
-                    "source": source, "youtube_url": extract_youtube(raw_desc),
-                    "rss_img": rss_image(entry),
-                    "id": "".join(c for c in link if c.isalnum()),
-                    "content_hash": h,
-                })
-            print(f"  {source}: {len(feed.entries)} items")
-        except Exception as e:
-            print(f"  {source} error: {e}")
+        for attempt in range(2):
+            try:
+                resp = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+                feed = feedparser.parse(resp.content)
+                seen = set()
+                for entry in feed.entries[:limit]:
+                    raw_desc = entry.get("description", "") or ""
+                    title = clean(entry.get("title", ""))
+                    desc = clean_desc(raw_desc)
+                    link = entry.get("link", "")
+                    norm = re.sub(r"[^a-zа-яё0-9]", "", (title + desc[:100]).lower())
+                    h = hashlib.md5(norm.encode()).hexdigest()
+                    if h in seen:
+                        continue
+                    seen.add(h)
+                    entries.append({
+                        "title": title, "desc": desc, "link": link,
+                        "source": source, "youtube_url": extract_youtube(raw_desc),
+                        "rss_img": rss_image(entry),
+                        "id": "".join(c for c in link if c.isalnum()),
+                        "content_hash": h,
+                    })
+                print(f"  {source}: {len(feed.entries)} items")
+                _feed_errors[source] = {"count": 0, "time": 0}
+                _state["feed_errors"] = _feed_errors
+                return entries
+            except Exception as e:
+                if attempt == 0:
+                    print(f"  {source} error: {e}, retrying...")
+                    time.sleep(5)
+                else:
+                    print(f"  {source} retry failed: {e}")
+                    _feed_errors[source] = {"count": src_err.get("count", 0) + 1, "time": time.time()}
+                    _state["feed_errors"] = _feed_errors
         return entries
 
     all_items = []

@@ -3,6 +3,7 @@ import sys
 import time
 import signal
 import atexit
+import threading
 import requests
 
 from bot.config import (
@@ -18,8 +19,9 @@ from bot.core import (
 )
 from bot.security import (
     security_check, _acquire_lock, _release_lock, _safe_exit,
-    _disk_space_check,
+    _disk_space_check, safe_download_image, detect_image_type,
 )
+from bot.core import is_hd
 from bot.features import (
     send_post, fetch_news, score_news_item,
     fetch_steam_deals, fetch_epic_free_games, fetch_gog_free_games,
@@ -292,17 +294,20 @@ def main():
                     content_hashes[str(ch)] = time.time()
                 posted += 1
 
-                # OST tracks on approval
+                # OST tracks on approval (background thread)
                 if p_game:
                     p_game_name = extract_game(p_title)
                     if p_game_name and len(p_game_name) > 2:
-                        tracks = game_ost_tracks(p_game_name, os.path.join(os.path.dirname(STATE_FILE), "audio_tmp"))
-                        if tracks and len(tracks) >= 2:
-                            for path, track_title in tracks[:2]:
-                                if path and os.path.exists(path):
-                                    r = send_audio_file(path, track_title)
-                                    if r:
-                                        print(f"  OST sent for {p_game_name}: {track_title[:50]}")
+                        def _post_ost(name, title, tmpdir):
+                            tracks = game_ost_tracks(name, tmpdir)
+                            if tracks and len(tracks) >= 2:
+                                for path, track_title in tracks[:2]:
+                                    if path and os.path.exists(path):
+                                        r = send_audio_file(path, track_title)
+                                        if r:
+                                            print(f"  OST sent for {name}: {track_title[:50]}")
+                        tmpdir = os.path.join(os.path.dirname(STATE_FILE), "audio_tmp")
+                        threading.Thread(target=_post_ost, args=(p_game_name, p_title, tmpdir), daemon=True).start()
             continue
 
         # Still waiting — re-add to pending
@@ -315,13 +320,28 @@ def main():
             caption = make_caption(best["title"], best.get("desc", ""), best["link"], best["_game"])
             img = find_post_image(best)
             preview_text = f"\U0001F514 <b>Пре-модерация</b>\n\n{caption}"
-            r = tg("sendMessage", json={
-                "chat_id": ADMIN_CHAT_ID,
-                "text": preview_text,
-                "parse_mode": "HTML",
-            }, timeout=10)
-            if r:
-                mod_msg_id = r.json()["result"]["message_id"]
+            mod_msg_id = None
+            if img:
+                try:
+                    img_bytes = safe_download_image(img, timeout=10)
+                    if img_bytes and is_hd(img_bytes):
+                        ext, mime = detect_image_type(img_bytes)
+                        r = tg("sendPhoto", data={
+                            "chat_id": ADMIN_CHAT_ID, "caption": preview_text, "parse_mode": "HTML",
+                        }, files={"photo": (f"preview.{ext}", img_bytes, mime)}, timeout=15)
+                        if r:
+                            mod_msg_id = r.json()["result"]["message_id"]
+                except Exception:
+                    pass
+            if not mod_msg_id:
+                r = tg("sendMessage", json={
+                    "chat_id": ADMIN_CHAT_ID,
+                    "text": preview_text,
+                    "parse_mode": "HTML",
+                }, timeout=10)
+                if r:
+                    mod_msg_id = r.json()["result"]["message_id"]
+            if mod_msg_id:
                 new_pending.append({
                     "title": best["title"],
                     "desc": best.get("desc", ""),
@@ -374,7 +394,7 @@ def main():
         "last_deals_date", "content_hashes", "last_daily_admin_stats",
         "_bot_id", "_linked_chat_id", "listener_track", "last_moderation_sent",
         "pending_moderation", "moderation_offset",
-        "_last_security_check",
+        "_last_security_check", "feed_errors",
     }
     for k in list(state.keys()):
         if k not in keep_keys:
