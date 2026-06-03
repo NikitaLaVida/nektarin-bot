@@ -12,11 +12,12 @@ from bot.config import (
     ADMIN_CHAT_ID, SILENT_HOURS, MODERATION_INTERVAL,
     MODERATION_TTL, set_global_state, WATCHED_GAMES,
     validate_config, _SCORING,
+    TITLE_DEDUP_MIN_WORDS,
 )
 from bot.core import (
     _get_token, tg, save_state, escape_html,
     extract_game, process_updates,
-    get_recent_game_names,
+    get_recent_game_names, title_similarity,
     load_state, send_audio_file,
 )
 from bot.security import (
@@ -306,7 +307,29 @@ def _process_moderation(state, ids, unseen):
         last_themes = state.get("last_posted_themes", [])
         unseen_filtered.sort(key=lambda x: (last_themes.count(x.get("_theme", "generic")), -x["_score"]))
         sent = 0
+        posted_msgs = state.get("posted_msgs", {})
+        dedup_cutoff = time.time() - _SCORING["title_dedup_hours"] * 3600
+        posted_titles = [
+            v.get("title", "") for v in posted_msgs.values()
+            if v.get("time", 0) >= dedup_cutoff and v.get("title")
+        ]
+        threshold = _SCORING["title_dedup_threshold"]
         for best in unseen_filtered:
+            title_new = best["title"]
+            words_new = set(title_new.lower().split())
+            dup = False
+            if len(words_new) >= TITLE_DEDUP_MIN_WORDS:
+                for old_title in posted_titles:
+                    words_old = set(old_title.lower().split())
+                    if len(words_old) < TITLE_DEDUP_MIN_WORDS:
+                        continue
+                    inter = len(words_new & words_old)
+                    union = len(words_new | words_old)
+                    if union > 0 and inter / union >= threshold:
+                        dup = True
+                        break
+            if dup:
+                continue
             if _send_moderation_preview(best, new_pending, pending_ids):
                 sent += 1
         if new_pending:

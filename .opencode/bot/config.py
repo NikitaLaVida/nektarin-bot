@@ -35,6 +35,8 @@ _SCORING = {
     "rumor_penalty": -15, "non_gaming_penalty": -50,
     "source_quality_max_penalty": -50,
     "source_quality_min_samples": 3,
+    "title_dedup_threshold": 0.55,
+    "title_dedup_hours": 48,
     "min_watched_auto_score": 30,
 }
 _SEP = '\u2581'
