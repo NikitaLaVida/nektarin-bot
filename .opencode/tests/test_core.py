@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from bot.core import (
     escape_html, clean, clean_desc, shorten, is_gaming_related,
     extract_game, extract_numbers, extract_platforms, detect_theme,
-    title_similarity, is_hot, is_trailer, detect_genre, has_gaming_context,
+    title_similarity, is_hot, is_trailer, detect_genre,
 )
 from bot.security import is_safe_url, detect_image_type
 
@@ -175,14 +175,6 @@ class TestDetectGenre(unittest.TestCase):
 
     def test_no_genre(self):
         self.assertIsNone(detect_genre("обычный текст"))
-
-
-class TestHasGamingContext(unittest.TestCase):
-    def test_gaming(self):
-        self.assertTrue(has_gaming_context("про игру", "Steam"))
-
-    def test_non_gaming(self):
-        self.assertFalse(has_gaming_context("про погоду", "дождь"))
 
 
 class TestSafeUrl(unittest.TestCase):

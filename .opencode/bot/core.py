@@ -4,49 +4,40 @@ import json
 import re
 import time
 import random
+import logging
 import requests
 import io
+from functools import lru_cache
 from html import unescape
 from PIL import Image
 from deep_translator import GoogleTranslator
+from requests.exceptions import RequestException
 
 from bot.config import (
-    STATE_FILE, LOG_FILE, TG_API, TG_PROXY, MAX_RSS_TEXT_LEN,
+    STATE_FILE, LOG_FILE, TG_API, MAX_RSS_TEXT_LEN,
     MAX_IMAGE_SIZE, PRIORITY_KEYWORDS, YOUTUBE_RE_SRC,
     TRAILER_KEYWORDS, BOILERPLATE, MAX_CAPTION_LEN, MAX_DESC_LEN,
     CHANNEL_SIGNATURE, THEME_WORDS, GENRE_TAGS, PLATFORMS,
     GAMING_SIGNAL_WORDS, NON_GAMING_TITLE_WORDS,
-    GAME_DEDUP_HOURS, TITLE_DEDUP_HOURS, TITLE_DEDUP_MIN_WORDS,
-    WIKI_UA, _CFG, ADMIN_CHAT_ID,
+    GAME_DEDUP_HOURS, TITLE_DEDUP_MIN_WORDS,
+    _CFG, ADMIN_CHAT_ID,
     CHANNEL_ID, BOT_TOKEN, _SEP, TG_PROXY as TG_PROXY_VAL,
 )
 
-_TRANSLATOR = GoogleTranslator(source='en', target='ru')
-_TRANSLATE_CACHE = {}
-_TRANSLATE_CACHE_MAX = 500
+logger = logging.getLogger(__name__)
 _orig_print = print
 
-def safe_print(*args, **kwargs):
+def log(*args, **kwargs):
     safe = []
     for a in args:
         if isinstance(a, str):
-            safe.append(a.encode("utf-8", errors="replace").decode("utf-8", errors="replace").encode("cp1251", errors="replace").decode("cp1251"))
+            safe.append(a.encode("utf-8", errors="replace").decode("utf-8"))
         else:
             safe.append(a)
     _orig_print(*safe, **kwargs)
 
-print = safe_print
 
 
-def log(msg):
-    ts = time.strftime("%Y-%m-%d %H:%M:%S")
-    line = f"[{ts}] {msg}"
-    print(line)
-    try:
-        with open(LOG_FILE, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
-    except Exception:
-        pass
 
 
 def escape_html(text):
@@ -79,28 +70,60 @@ def shorten(s, max_len=200):
     if len(s) <= max_len:
         return s
     half = max_len // 2
-    for sep, keep in [(". ", 1), ("! ", 1), ("? ", 1), (", ", 0), (" ", 0)]:
+    for sep, keep in [(". ", 1), ("! ", 1), ("? ", 1), (", ", 0)]:
         cut = s.rfind(sep, 0, max_len)
         if half < cut <= max_len:
             return s[:cut + keep]
+    last_space = s.rfind(" ", 0, max_len)
+    if last_space > half:
+        return s[:last_space]
     return s[:max_len].rstrip()
 
+
+_TRANSLATOR = GoogleTranslator(source='en', target='ru')
+
+@lru_cache(maxsize=1000)
+def _do_translate(text):
+    return _TRANSLATOR.translate(text)
+
+def _translate_fallback(text):
+    try:
+        r = requests.get(
+            "https://lingva.ml/api/v1/en/ru/" + requests.utils.quote(text[:500]),
+            timeout=5,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        if r.status_code == 200:
+            data = r.json()
+            return data.get("translation", text)
+    except Exception:
+        pass
+    try:
+        r = requests.get(
+            "https://translate.googleapis.com/translate_a/single",
+            params={"client": "gtx", "sl": "en", "tl": "ru", "dt": "t", "q": text[:1000]},
+            timeout=5,
+        )
+        if r.status_code == 200:
+            parts = r.json()
+            result = "".join(p[0] for p in parts[0] if p[0])
+            if result:
+                return result
+    except Exception:
+        pass
+    return text
 
 def translate_en_ru(text):
     if not text:
         return text
-    key = text[:200]
-    if key in _TRANSLATE_CACHE:
-        return _TRANSLATE_CACHE[key]
-    if len(_TRANSLATE_CACHE) >= _TRANSLATE_CACHE_MAX:
-        _TRANSLATE_CACHE.clear()
     try:
-        result = _TRANSLATOR.translate(text)
-        _TRANSLATE_CACHE[key] = result
-        return result
+        return _do_translate(text)
     except Exception as e:
-        print(f"  Translation error: {e}")
-        _TRANSLATE_CACHE[key] = text
+        log(f"  GoogleTranslate error: {e}, trying fallback...")
+        result = _translate_fallback(text)
+        if result != text:
+            return result
+        log(f"  All translators failed")
         return text
 
 
@@ -127,19 +150,15 @@ def extract_youtube(raw_html):
     return None
 
 
-def has_gaming_context(title, desc):
-    text = (title + " " + desc).lower()
-    for w in GAMING_SIGNAL_WORDS:
-        if w in text:
-            return True
-    return False
-
-
 def is_gaming_related(title, desc):
     t = title.lower()
     for w in NON_GAMING_TITLE_WORDS:
         if w in t:
-            return has_gaming_context(title, desc)
+            game = extract_game(title)
+            if game and len(game) > 3 and game.lower() not in NON_GAMING_TITLE_WORDS:
+                return True
+            text = (title + " " + desc).lower()
+            return any(w in text for w in GAMING_SIGNAL_WORDS)
     return True
 
 
@@ -151,18 +170,6 @@ def get_recent_game_names(posted_msgs, hours=GAME_DEDUP_HOURS):
         if t >= cutoff and data.get("game"):
             names.add(data["game"].lower())
     return names
-
-
-def get_recent_titles(posted_msgs, hours=TITLE_DEDUP_HOURS):
-    cutoff = time.time() - hours * 3600
-    titles = []
-    for mid, data in posted_msgs.items():
-        t = data.get("time", 0)
-        title = data.get("title", "")
-        if t >= cutoff and title:
-            titles.append(title.lower())
-    return titles
-
 
 def title_similarity(a, b):
     words_a = set(a.lower().split())
@@ -181,12 +188,20 @@ def load_state():
     return {"ids": {}}
 
 
+_LAST_SAVED_STATE = None
+
+
 def save_state(state):
+    global _LAST_SAVED_STATE
+    content = json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True)
+    if content == _LAST_SAVED_STATE:
+        return
     os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
     tmp = STATE_FILE + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
+        f.write(content)
     os.replace(tmp, STATE_FILE)
+    _LAST_SAVED_STATE = content
 
 
 def _get_token():
@@ -200,35 +215,41 @@ def _get_token():
     return token
 
 
-def tg(method, **kwargs):
+def _tg_request(method, http_method="post", params=None, **kwargs):
     token = _get_token()
     if not token:
-        print(f"  TG {method}: no token")
+        log(f"  TG {method}: no token")
         return None
-    try:
-        timeout = kwargs.pop("timeout", 10)
-        proxies = {"https": TG_PROXY_VAL} if TG_PROXY_VAL else None
-        r = requests.post(f"{TG_API}{token}/{method}", timeout=timeout, proxies=proxies, **kwargs)
-        if r.status_code == 200:
-            return r
-        print(f"  TG {method} failed ({r.status_code}): {r.text[:80]}")
-    except Exception as e:
-        print(f"  TG {method} err: {e}")
+    url = f"{TG_API}{token}/{method}"
+    proxies = {"https": TG_PROXY_VAL} if TG_PROXY_VAL else None
+    timeout = kwargs.pop("timeout", 15)
+    for attempt in range(3):
+        try:
+            if http_method == "get":
+                r = requests.get(url, params=params, timeout=timeout, proxies=proxies, **kwargs)
+            else:
+                r = requests.post(url, timeout=timeout, proxies=proxies, **kwargs)
+            if r.status_code == 200:
+                return r
+            if 400 <= r.status_code < 500:
+                log(f"  TG {method} client error ({r.status_code}): {r.text[:80]}")
+                return None
+            log(f"  TG {method} failed ({r.status_code}), attempt {attempt + 1}")
+        except RequestException as e:
+            log(f"  TG {method} err [{attempt + 1}]: {e}")
+        time.sleep(2)
     return None
 
 
+def tg(method, **kwargs):
+    r = _tg_request(method, "post", **kwargs)
+    return r
+
+
 def tg_get(method, params=None):
-    token = _get_token()
-    if not token:
-        return None
-    try:
-        proxies = {"https": TG_PROXY_VAL} if TG_PROXY_VAL else None
-        r = requests.get(f"{TG_API}{token}/{method}", params=params, timeout=10, proxies=proxies)
-        if r.status_code == 200:
-            return r.json()
-        print(f"  TG GET {method} failed ({r.status_code}): {r.text[:100]}")
-    except Exception as e:
-        print(f"  TG GET {method} err: {e}")
+    r = _tg_request(method, "get", params=params)
+    if r:
+        return r.json()
     return None
 
 
@@ -241,8 +262,8 @@ def process_updates(state, pending_by_msg_id):
             if me:
                 bot_id = me.json()["result"]["id"]
                 state["_bot_id"] = bot_id
-        except Exception:
-            pass
+        except Exception as e:
+            log(f"  getMe err: {e}")
     if not linked_group:
         try:
             chat_info = tg("getChat", json={"chat_id": CHANNEL_ID})
@@ -251,8 +272,8 @@ def process_updates(state, pending_by_msg_id):
                 linked_group = data.get("result", {}).get("linked_chat_id")
                 if linked_group:
                     state["_linked_chat_id"] = linked_group
-        except Exception:
-            pass
+        except Exception as e:
+            log(f"  getChat err: {e}")
     if not pending_by_msg_id and not linked_group:
         return {}
     offset = state.get("moderation_offset", 0)
@@ -285,19 +306,33 @@ def process_updates(state, pending_by_msg_id):
                 text_lower.startswith("песня ") or \
                 text_lower.startswith("музыка ")
             if is_track:
-                state["listener_track"] = {
+                tracks = state.setdefault("listener_tracks", [])
+                tracks.append({
                     "text": text,
                     "from": msg.get("from", {}).get("first_name", "Подписчик"),
                     "time": time.time(),
                     "week": time.strftime("%Y-W%V"),
-                }
-                print(f"  Listener track saved: {text[:60]}")
+                })
+                if len(tracks) > 100:
+                    state["listener_tracks"] = tracks[-100:]
+                log(f"  Listener tracks: {len(tracks)} this week, saved: {text[:60]}")
+            elif len(text) > 30:
+                comments = state.setdefault("weekly_comments", [])
+                comments.append({
+                    "text": text[:200],
+                    "from": msg.get("from", {}).get("first_name", "Подписчик"),
+                    "time": time.time(),
+                })
+                if len(comments) > 300:
+                    state["weekly_comments"] = comments[-300:]
             tg("sendMessage", json={
                 "chat_id": linked_group,
                 "text": random.choice(REPLY_TEMPLATES),
                 "reply_to_message_id": msg.get("message_id"),
             }, timeout=10)
         state["moderation_offset"] = upd_id + 1
+    if result:
+        save_state(state)
     return replies
 
 
@@ -308,8 +343,8 @@ def send_error(msg):
             "text": f"\U0001F6A8 <b>Bot Error</b>\n\n{escape_html(msg[:500])}",
             "parse_mode": "HTML",
         }, timeout=8)
-    except Exception:
-        pass
+    except Exception as e:
+        log(f"  send_error failed: {e}")
 
 
 def is_hd(img_data):
@@ -320,10 +355,11 @@ def is_hd(img_data):
             return True
         if w * h >= 500000:
             return True
-        print(f"  Image too small: {w}x{h}")
+        log(f"  Image too small: {w}x{h}")
         return False
-    except Exception:
-        return True
+    except Exception as e:
+        log(f"  is_hd err: {e}")
+        return False
 
 
 def detect_theme(title, desc):
@@ -353,6 +389,17 @@ def extract_game(title):
         "capcom", "bungie", "valve", "activision", "ubisoft", "bethesda",
         "microsoft", "sony", "nintendo",
         "playstation", "xbox", "консоль", "приставк",
+        "анонс", "анонса", "анонсу", "анонсом", "анонсе", "анонсы", "анонсов",
+        "перенос", "переноса", "переносом", "слух", "слуха", "слухи", "слухов",
+        "утечка", "утечки", "утечку", "утечек", "слив", "слива", "сливы",
+        "трейлер", "трейлера", "трейлеры", "тизер", "тизера",
+        "влияние", "состояние", "решение", "развитие", "изменение", "событие",
+        "подробности", "детали", "итоги", "результаты", "мнение", "впечатление",
+        "причина", "последствия", "проблема", "ситуация", "будущее", "прошлое",
+        "настоящее", "начало", "конец", "процесс", "работа", "запуск",
+        "поддержка", "разработка", "производство", "исследование", "анализ",
+        "вопрос", "ответ", "факт", "данные", "информация", "новость", "статья",
+        "репортаж", "интервью", "колонка", "блог", "пост", "запись",
         "в", "и", "на", "с", "со", "из", "по", "за", "от", "до",
         "у", "о", "об", "во", "при", "про", "для", "без", "через",
         "ещё", "уже", "все", "как", "так", "что", "кто", "где",
@@ -383,6 +430,8 @@ def extract_game(title):
         game = title[:40] if title else game
     if not game:
         game = words[0] if words else ""
+    if not game:
+        game = title[:30] if title else ""
     if 3 < len(game) <= 50:
         return game
     if len(game) > 50:
@@ -423,8 +472,10 @@ def smart_comment(theme, game, title):
         "sequel": [f"Продолжение {kw} на подходе!", f"В мир {kw} вернёмся скоро.", f"Сиквел {kw} — будет жарко."],
         "console": [f"{kw} выходит на консолях!", f"Консольщики, {kw} ваша.", f"{kw} — теперь и на диване."],
         "drama": [f"Скандал вокруг {kw}!", f"Драма: {kw} снова в центре.", f"Шум вокруг {kw} нарастает."],
-        "rumor": [f"Слух: {kw}...", f"Говорят, {kw} готовит сюрприз.", f"Инсайд: {kw}."],
-        "announce": [f"Анонс {kw}! Дождались.", f"{kw} официально анонсирована!", f"Ждали? {kw} в разработке."],
+        "rumor": [f"Слух: {kw}...", f"Говорят, {kw} готовит сюрприз.", f"Инсайд: {kw}.",
+                f"Слухи вокруг {kw} сгущаются.", f"{kw} — соль недели."],
+        "announce": [f"Анонс {kw}! Дождались.", f"{kw} официально анонсирована!", f"Ждали? {kw} в разработке.",
+                     f"Свершилось! {kw} анонсирована.", f"Ждали — получите. {kw}."],
         "generic": [f"Новость дня.", f"Вот это поворот.", f"Держите в курсе."],
     }
     return random.choice(ctx.get(theme, ctx["generic"]))
@@ -435,30 +486,45 @@ COMMENTARIES = {
         "Ого, неплохо продаётся!", "Народ знает толк.",
         "Миллионеры, блин.", "Кассовый успех на лицо.",
         "А вы уже купили или ждёте скидку?",
+        "Только цифры, без эмоций.", "Продажи говорят сами за себя.",
+        "Рекорд за рекордом!", "Статистика впечатляет.",
     ],
     "delay": [
         "Ну вот, опять перенос...", "Ждали? Потерпите ещё.",
         "Классика жанра — очередной перенос.",
         "Видимо, решили допилить до ума.", "Не судьба пока.",
+        "Перенос — это новые баги.", "Лучше позже, чем сырым.",
+        "Когда уже?", "Терпение, друзья.",
     ],
     "sequel": [
         "О, а вот это интересно.", "Продолжение следует!",
         "Надо будет обязательно глянуть.",
         "Вернуться во вселенную — отличная идея.",
         "Сиквел, которого все ждали.",
+        "Старые герои, новая история.", "Надеемся, не запорят.",
+        "Фанбаза ликует.", "Даёшь продолжение!",
     ],
     "console": [
         "Консольщики, внимание.", "Эксклюзивчик подвезли.",
         "На консолях тоже праздник.", "Поиграть можно будет и на диване.",
+        "Теперь и на консолях.", "Консольный гейминг жив.",
+        "Платформ больше — игроков больше.",
     ],
     "drama": [
         "Ой, всё...", "Скандалы, интриги, расследования.",
         "Драма на ровном месте.", "Без хайпа никак.",
-        "И снова вокруг игры шум.",
+        "И снова вокруг игры шум.", "Горячая тема недели.",
+        "А вы на чьей стороне?", "Шторм в стакане воды.",
+        "Когда уже утихнет?", "Драма драмой, а хайп живёт.",
     ],
     "generic": [
         "Вот такое дело.", "Новости игропрома.",
         "Держите в курсе.", "Будет интересно.", "На заметку.",
+        "Понеслась душа в рай.", "Ну, погнали!",
+        "Игровая индустрия не спит.", "Интересный поворот.",
+        "Без комментариев. Но мы оставим.", "А вы что думаете?",
+        "Тренд или случайность?", "Ждём-с.",
+        "В мире игр ничего не меняется.", "Очередной виток спирали.",
     ],
 }
 
@@ -526,7 +592,8 @@ def template_sequel(title, desc, game, numbers, platforms, genre, link):
 def template_console(title, desc, game, numbers, platforms, genre, link):
     s = shorten(desc, MAX_DESC_LEN)
     commentary = smart_comment("console", game, title)
-    body = f"{game}{' на ' + '/'.join(platforms[:3]) if platforms else ''}. {s}"
+    platform_str = f" на {'/'.join(platforms[:3])}" if platforms else ""
+    body = f"{game}{platform_str}. {s}" if game else f"{title}. {s}"
     return [commentary, _SEP * 7, embed_link(body, link)]
 
 
@@ -571,6 +638,9 @@ TEMPLATES = {
 
 
 def send_audio_file(path, title, performer=None, chat_id=None):
+    if not os.path.exists(path):
+        log(f"  Audio file not found: {path}")
+        return None
     ext = os.path.splitext(path)[1] or ".webm"
     mime_map = {
         ".mp3": "audio/mpeg", ".m4a": "audio/mp4",
@@ -581,12 +651,21 @@ def send_audio_file(path, title, performer=None, chat_id=None):
     payload = {"chat_id": chat_id or CHANNEL_ID, "title": title[:60]}
     if performer:
         payload["performer"] = performer
-    with open(path, "rb") as f:
-        r = tg("sendAudio", data=payload,
-               files={"audio": (f"audio{ext}", f, mime)}, timeout=30)
-    if r:
+    for attempt in range(2):
         try:
-            os.remove(path)
-        except Exception:
-            pass
-    return r
+            with open(path, "rb") as f:
+                r = tg("sendAudio", data=payload,
+                       files={"audio": (f"audio{ext}", f, mime)}, timeout=45)
+            if r:
+                try:
+                    os.remove(path)
+                except Exception as e:
+                    log(f"  Audio file cleanup err: {e}")
+                return r
+            log(f"  Audio send attempt {attempt+1} failed, retrying...")
+            time.sleep(3)
+        except Exception as e:
+            log(f"  Audio send attempt {attempt+1} error: {e}")
+            time.sleep(3)
+    log(f"  Audio send failed after retries: {title}")
+    return None

@@ -21,9 +21,22 @@ if os.path.exists(_CONFIG_PATH):
     except Exception as _e:
         print(f"  Config load err: {_e}")
 
+BOT_TOKEN = BOT_TOKEN or os.environ.get("BOT_TOKEN") or os.environ.get("TG_BOT_TOKEN") or ""
+
+def validate_config():
+    if not BOT_TOKEN:
+        raise RuntimeError("BOT_TOKEN is empty — set bot_token in bot_config.json or BOT_TOKEN env var")
 MAX_POSTS = 2
+_SCORING = {
+    "hot_boost": 50, "trailer_boost": 10, "youtube_boost": 5,
+    "desc_score_per_char": 0.2, "desc_max_score": 20,
+    "numbers_boost": 5, "platforms_boost": 3, "game_found_boost": 10,
+    "repeat_hot_penalty": -100, "repeat_penalty": -300,
+    "rumor_penalty": -15, "non_gaming_penalty": -50,
+    "min_watched_auto_score": 30,
+}
 _SEP = '\u2581'
-PRIORITY_KEYWORDS = [
+PRIORITY_KEYWORDS = {
     "gta 6", "gta vi", "grand theft auto",
     "elden ring", "witcher 4", "witcher",
     "half-life 3", "half life 3", "hl3",
@@ -38,7 +51,7 @@ PRIORITY_KEYWORDS = [
     "mass effect", "dragon age",
     "silksong", "hollow knight",
     "секрет", "слух", "утечк", "слив",
-]
+}
 _DATA_DIR = os.environ.get("DATA_DIR", "")
 if not _DATA_DIR:
     _DATA_DIR = os.path.expanduser("~/.opencode")
@@ -52,17 +65,21 @@ RSS_FEEDS = [
     ("https://www.goha.ru/rss/videogames", "goha_videogames", 5),
     ("https://www.goha.ru/rss/industry", "goha_industry", 3),
     ("https://www.goha.ru/rss/articles", "goha_articles", 3),
-    ("https://www.playground.ru/rss/news.xml", "playground", 10),
     ("https://kanobu.ru/rss/articles.full.xml", "kanobu", 5),
+    ("https://vgtimes.ru/rss.xml", "vgtimes", 5),
     ("https://dtf.ru/rss/all", "dtf", 5),
     ("https://app2top.ru/feed/", "app2top", 5),
     ("https://habr.com/ru/rss/hubs/games/news/", "habr_games", 5),
     ("https://mmorpg-blog.ru/feed/", "mmorpgblog", 3),
+    ("https://feeds.feedburner.com/ign/all", "ign_en", 5),
+    ("https://www.pcgamer.com/rss/", "pcgamer_en", 5),
+    ("https://www.gamespot.com/feeds/news/", "gamespot_en", 5),
+    ("https://www.eurogamer.net/feed/", "eurogamer_en", 5),
+    ("https://www.rockpapershotgun.com/feed/", "rps_en", 5),
 ]
 
 ANIME_FEEDS = [
     ("https://www.animenewsnetwork.com/news/rss.xml", "animenews", 5),
-    ("https://shazoo.ru/rss.xml", "shazoo_anime", 3),
 ]
 
 ROCK_FEEDS = [
@@ -72,7 +89,7 @@ ROCK_FEEDS = [
     ("https://rocknloadmag.com/feed/", "rocknload", 10),
 ]
 
-ROCK_ARTISTS = [
+ROCK_ARTISTS = {
     "slipknot", "green day", "hollywood undead", "korn",
     "disturbed", "linkin park", "system of a down", "three days grace",
     "breaking benjamin", "shinedown", "papa roach", "evanescence",
@@ -82,7 +99,12 @@ ROCK_ARTISTS = [
     "five finger death punch", "i prevail", "bad omens",
     "motionless in white", "ice nine kills", "architects",
     "the amity affliction", "memphis may fire", "asking alexandria",
-]
+    # Modern Russian rock
+    "слот", "badtripboys", "таймсквер", "tritia", "мегамозг",
+    "я про рок", "три дня дождя", "кис-кис", "дурной вкус",
+    "пневмослон", "мытищи в огне", "ssshhhiiittt", "буерак",
+    "увула",
+}
 
 ROCK_TRACKS = {
     "architects": [
@@ -302,6 +324,105 @@ ROCK_TRACKS = {
         ("Pain", "Three Days Grace Pain"),
         ("Never Too Late", "Three Days Grace Never Too Late"),
     ],
+    # Modern Russian rock
+    "слот": [
+        ("2 войны", "Слот 2 войны"),
+        ("Круги на воде", "Слот Круги на воде"),
+        ("Зеркала", "Слот Зеркала"),
+        ("Мёртвые души", "Слот Мертвые души"),
+        ("Ленинград", "Слот Ленинград"),
+    ],
+    "badtripboys": [
+        ("Детка, алло", "BadTrip Boys Детка алло"),
+        ("Спагетти", "BadTrip Boys Спагетти"),
+        ("ПАРФЮМ", "BadTrip Boys ПАРФЮМ"),
+        ("Давай замедлим", "BadTrip Boys Давай замедлим"),
+        ("Круги", "BadTrip Boys Круги"),
+    ],
+    "таймсквер": [
+        ("Мой серый город", "Таймсквер Мой серый город"),
+        ("Неизбежность зла", "Таймсквер Неизбежность зла"),
+        ("Облако", "Таймсквер Облако"),
+        ("Между Тьмой и Светом", "Таймсквер Между Тьмой и Светом"),
+        ("Апперкот", "Таймсквер Апперкот"),
+    ],
+    "tritia": [
+        ("Дым", "TRITIA дым"),
+        ("Ноль", "TRITIA ноль"),
+        ("Волны", "TRITIA волны"),
+        ("Пустота", "TRITIA пустота"),
+        ("Соль", "TRITIA соль"),
+    ],
+    "мегамозг": [
+        ("Навсегда", "Мегамозг Навсегда"),
+        ("Карфаген", "Мегамозг Карфаген"),
+        ("Молчание", "Мегамозг Молчание"),
+        ("Радиация", "Мегамозг Радиация"),
+        ("Яд", "Мегамозг Кислород"),
+    ],
+    "я про рок": [
+        ("Ангел-хранитель", "я про рок ангел-хранитель"),
+        ("Миллион", "я про рок миллион"),
+        ("Без тебя", "я про рок без тебя"),
+        ("В темноте", "я про рок в темноте"),
+        ("Громче", "я про рок громче"),
+    ],
+    "три дня дождя": [
+        ("Демоны", "Три дня дождя Демоны"),
+        ("За край", "Три дня дождя За край"),
+        ("Прощание", "Три дня дождя Прощание"),
+        ("Виски", "Три дня дождя Виски"),
+        ("Алекситимия", "Три дня дождя Алекситимия"),
+    ],
+    "кис-кис": [
+        ("Молчи", "кис-кис молчи"),
+        ("Мальчик", "кис-кис мальчик"),
+        ("ЛБТД", "кис-кис лбтд"),
+        ("Тиндер", "кис-кис тиндер"),
+        ("Не надо", "кис-кис не надо"),
+    ],
+    "дурной вкус": [
+        ("Пластинки", "дурной вкус пластинки"),
+        ("Навсегда", "дурной вкус навсегда"),
+        ("Полетаем", "дурной вкус полетаем"),
+        ("Не уходи", "дурной вкус не уходи"),
+        ("Тайна", "дурной вкус тайна"),
+    ],
+    "пневмослон": [
+        ("Грустно", "Пневмослон грустно"),
+        ("Котик", "Пневмослон котик"),
+        ("42", "Пневмослон 42"),
+        ("Жить", "Пневмослон жить"),
+        ("Счастье", "Пневмослон счастье"),
+    ],
+    "мытищи в огне": [
+        ("Пожар", "Мытищи в огне пожар"),
+        ("Город", "Мытищи в огне город"),
+        ("Каждый день", "Мытищи в огне каждый день"),
+        ("Крыши", "Мытищи в огне крыши"),
+        ("Мосты", "Мытищи в огне мосты"),
+    ],
+    "ssshhhiiittt": [
+        ("Привет", "ssshhhiiittt привет"),
+        ("Любовь", "ssshhhiiittt любовь"),
+        ("Солнце", "ssshhhiiittt солнце"),
+        ("Дворы", "ssshhhiiittt дворы"),
+        ("Весна", "ssshhhiiittt весна"),
+    ],
+    "буерак": [
+        ("Солнечный свет", "Буерак солнечный свет"),
+        ("Романтика", "Буерак романтика"),
+        ("Танцевать", "Буерак танцевать"),
+        ("Коммерция", "Буерак коммерция"),
+        ("Стыд", "Буерак стыд"),
+    ],
+    "увула": [
+        ("Ты и твоя тень", "увула ты и твоя тень"),
+        ("Электрический ток", "увула электрический ток"),
+        ("Нам остаётся лишь ждать", "увула нам остается лишь ждать"),
+        ("Nike Box Live", "увула nike box live"),
+        ("Тайна", "увула тайна"),
+    ],
 }
 
 WIKI_UA = "GamingNewsBot/1.0 (https://t.me/NektarinGaming)"
@@ -321,7 +442,7 @@ GENRE_TAGS = {
     "файтинг", "гонк", "платформер", "головоломк", "песочниц", "выживани",
 }
 
-PLATFORMS = ["PS5", "PS4", "Xbox Series", "Xbox", "Switch", "PC", "Steam"]
+PLATFORMS = {"PS5", "PS4", "Xbox Series", "Xbox", "Switch", "PC", "Steam"}
 
 TG_API = "https://api.telegram.org/bot"
 MODERATION_TTL = 86400
@@ -337,13 +458,13 @@ MAX_DESC_LEN = 250
 MAX_IMAGE_SIZE = 10 * 1024 * 1024
 MAX_RSS_TEXT_LEN = 2000
 
-WATCHED_GAMES = [
+WATCHED_GAMES = {
     "elden ring", "witcher", "gta", "cyberpunk",
     "red dead", "god of war", "silksong",
     "half-life", "mass effect", "dragon age",
     "disco elysium", "baldurs gate", "baldur's gate",
     "starfield", "stalker", "fallout",
-]
+}
 
 CHANNEL_SIGNATURE = _CFG.get("channel_signature", "\n— @NektarinGaming")
 
@@ -376,9 +497,7 @@ GAMING_SIGNAL_WORDS = {
 }
 
 GAME_DEDUP_HOURS = 48
-TITLE_DEDUP_HOURS = 48
 TITLE_DEDUP_MIN_WORDS = 3
-TITLE_SIMILARITY_THRESHOLD = 0.65
 
 BOILERPLATE = [
     r"Читать далее.*$", r"Читать дальше.*$", r"Читать полностью.*$",
@@ -389,4 +508,4 @@ BOILERPLATE = [
 
 YOUTUBE_RE_SRC = r"(?:https?://)?(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/embed/)([a-zA-Z0-9_-]{11})"
 
-TRAILER_KEYWORDS = ["трейлер", "тизер", "gameplay", "trailer", "teaser", "геймплей"]
+TRAILER_KEYWORDS = {"трейлер", "тизер", "gameplay", "trailer", "teaser", "геймплей"}

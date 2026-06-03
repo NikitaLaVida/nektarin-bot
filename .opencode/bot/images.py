@@ -1,14 +1,16 @@
 import os
 import re
 import json
+import threading
 import requests
 
-from bot.config import WIKI_UA, STATE_FILE
+from bot.config import WIKI_UA
 from bot.security import safe_download_image, is_safe_url
 from bot.core import is_hd, extract_game
 
 
 _PINTEREST_SESSION = None
+_PINTEREST_LOCK = threading.Lock()
 
 
 def rss_image(entry):
@@ -122,8 +124,8 @@ def steam_image(game_name):
                         img = requests.head(f"{base}/{size}.jpg", timeout=5)
                         if img.status_code == 200:
                             return f"{base}/{size}.jpg"
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"  steam_image err: {e}")
     return None
 
 
@@ -140,8 +142,8 @@ def rawg_image(game_name):
                 bg = results[0].get("background_image")
                 if bg:
                     return bg
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"  rawg_image err: {e}")
     return None
 
 
@@ -169,51 +171,54 @@ def steamgrid_image(game_name):
             items = grids.json().get("data", [])
             if items:
                 return items[0].get("url")
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"  steamgrid_image err: {e}")
     return None
 
 
 def pinterest_image(game_name):
     global _PINTEREST_SESSION
     try:
-        if _PINTEREST_SESSION is None:
-            s = requests.Session()
-            s.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
-            s.get('https://www.pinterest.com/', timeout=10)
-            s.headers.update({
-                'X-CSRFToken': s.cookies.get('csrftoken', ''),
-                'X-Pinterest-AppState': 'active',
-                'X-Requested-With': 'XMLHttpRequest',
-                'Referer': 'https://www.pinterest.com/',
-                'Accept': 'application/json, text/javascript, */*; q=0.01',
-            })
-            _PINTEREST_SESSION = s
-        query = f"{game_name} game cover art"
-        post_data = {
-            'source_url': '/search/pins/?q=' + requests.utils.quote(query),
-            'data': json.dumps({
-                'options': {'query': query, 'scope': 'pins', 'page_size': 3, 'bookmarks': []},
-                'context': {},
-            }, ensure_ascii=False),
-        }
-        r = _PINTEREST_SESSION.post(
-            'https://www.pinterest.com/resource/SearchResource/get/',
-            data=post_data, timeout=5,
-        )
-        if r.status_code != 200:
+        with _PINTEREST_LOCK:
+            if _PINTEREST_SESSION is None:
+                s = requests.Session()
+                s.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
+                s.get('https://www.pinterest.com/', timeout=10)
+                s.headers.update({
+                    'X-CSRFToken': s.cookies.get('csrftoken', ''),
+                    'X-Pinterest-AppState': 'active',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Referer': 'https://www.pinterest.com/',
+                    'Accept': 'application/json, text/javascript, */*; q=0.01',
+                })
+                _PINTEREST_SESSION = s
+            query = f"{game_name} game cover art"
+            post_data = {
+                'source_url': '/search/pins/?q=' + requests.utils.quote(query),
+                'data': json.dumps({
+                    'options': {'query': query, 'scope': 'pins', 'page_size': 3, 'bookmarks': []},
+                    'context': {},
+                }, ensure_ascii=False),
+            }
+            r = _PINTEREST_SESSION.post(
+                'https://www.pinterest.com/resource/SearchResource/get/',
+                data=post_data, timeout=5,
+            )
+            if r.status_code != 200:
+                _PINTEREST_SESSION = None
+                return None
+            results = r.json().get('resource_response', {}).get('data', [])
+            for pin in results:
+                images = pin.get('images', {})
+                for size in ('orig', 'originals', '736x'):
+                    if size in images:
+                        url = images[size].get('url', '')
+                        if url:
+                            return url
+    except Exception as e:
+        print(f"  pinterest_image err: {e}")
+        with _PINTEREST_LOCK:
             _PINTEREST_SESSION = None
-            return None
-        results = r.json().get('resource_response', {}).get('data', [])
-        for pin in results:
-            images = pin.get('images', {})
-            for size in ('orig', 'originals', '736x'):
-                if size in images:
-                    url = images[size].get('url', '')
-                    if url:
-                        return url
-    except Exception:
-        _PINTEREST_SESSION = None
     return None
 
 
@@ -287,11 +292,11 @@ def find_post_image(item):
             img_bytes = safe_download_image(rss_img, timeout=5)
             if img_bytes and is_hd(img_bytes):
                 return rss_img
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"  RSS image download err: {e}")
     game = item.get("_game") or extract_game(item["title"])
     try:
         return find_image(item["title"], item.get("desc", ""), item["source"], game)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"  find_image err: {e}")
     return None

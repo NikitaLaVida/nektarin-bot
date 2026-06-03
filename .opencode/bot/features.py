@@ -4,22 +4,23 @@ import time
 import random
 import hashlib
 import glob
+import threading
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 import feedparser
 from datetime import datetime, timezone
 
 from bot.config import (
-    CHANNEL_ID, STATE_FILE, CHANNEL_SIGNATURE, ADMIN_CHAT,
+    CHANNEL_ID, STATE_FILE, CHANNEL_SIGNATURE,
     ADMIN_CHAT_ID,
     ANIME_FEEDS, ROCK_FEEDS, ROCK_ARTISTS, ROCK_TRACKS,
-    MAX_DESC_LEN,
-    WIKI_UA,
+    MAX_DESC_LEN, PRIORITY_KEYWORDS,
     MAX_CAPTION_LEN, MAX_IMAGE_SIZE, _SEP,
-    RSS_FEEDS, get_global_state,
+    RSS_FEEDS, get_global_state, _SCORING,
 )
 from bot.core import (
-    tg, save_state, escape_html, clean, clean_desc,
+    tg, escape_html, clean, clean_desc,
     is_hot, is_trailer, translate_en_ru, shorten,
     extract_game, extract_numbers, extract_platforms,
     detect_genre, detect_theme, is_gaming_related,
@@ -28,22 +29,42 @@ from bot.core import (
     COMMENTARIES, THEME_EMOJI, THEME_HASHTAGS,
     TEMPLATES,
 )
-from bot.security import safe_download_image, detect_image_type, is_safe_url
+from bot.security import safe_download_image, detect_image_type
 from bot.images import find_image, rss_image, find_post_image
 
+logger = logging.getLogger(__name__)
+
+
+def _is_english(text):
+    if not text:
+        return False
+    letters = [c for c in text if c.isalpha()]
+    if not letters:
+        return False
+    cyrillic = sum(1 for c in letters if '\u0400' <= c <= '\u04FF')
+    if cyrillic > 0:
+        return False
+    latin = sum(1 for c in letters if c.isascii() and c.isalpha())
+    return latin / len(letters) > 0.5
 
 def make_caption(title, desc, link, game=None):
+    raw_title = title
+    raw_desc = desc
     if not desc:
         desc = title
-    title = escape_html(title)
-    desc = escape_html(desc)
+    if _is_english(raw_title):
+        raw_title = translate_en_ru(raw_title)
+    if _is_english(raw_desc):
+        raw_desc = translate_en_ru(raw_desc)
+    title = escape_html(raw_title)
+    desc = escape_html(raw_desc)
     if not game:
-        game = extract_game(title)
+        game = extract_game(raw_title)
     game = escape_html(game)
-    numbers = extract_numbers(desc)
-    platforms = extract_platforms(title + " " + desc)
-    genre = detect_genre(desc)
-    theme = detect_theme(title, desc)
+    numbers = extract_numbers(raw_desc)
+    platforms = extract_platforms(raw_title + " " + raw_desc)
+    genre = detect_genre(raw_desc)
+    theme = detect_theme(raw_title, raw_desc)
     builder = TEMPLATES.get(theme, TEMPLATES["generic"])
     parts = builder(title, desc, game, numbers, platforms, genre, link)
     caption = "\n".join(parts)
@@ -61,32 +82,18 @@ def make_caption(title, desc, link, game=None):
 
 def send_post(title, desc, link, img_url, youtube_url=None, game=None, custom_caption=None):
     caption = custom_caption or make_caption(title, desc, link, game)
-    is_trailer_post = youtube_url and is_trailer(title)
-    if is_trailer_post:
-        try:
-            text = f"{caption}\n\n{youtube_url}"
-            r = tg("sendMessage", json={
-                "chat_id": CHANNEL_ID, "text": text,
-                "parse_mode": "HTML", "disable_web_page_preview": False,
-            }, timeout=15)
-            if r:
-                msg_id = r.json()["result"]["message_id"]
-                print(f"  Sent trailer: {title[:60]} (msg#{msg_id})")
-                return msg_id
-            print(f"  Trailer send failed ({r.status_code if r else 'no response'})")
-        except Exception as e:
-            print(f"  Trailer err: {e}")
+    caption_with_link = f"{caption}\n\n{youtube_url}" if youtube_url else caption
     if img_url:
         try:
-            img_bytes = safe_download_image(img_url, timeout=10)
+            img_bytes = safe_download_image(img_url, timeout=15)
             if img_bytes and is_hd(img_bytes):
                 img_ext, img_mime = detect_image_type(img_bytes)
                 files = {"photo": (f"image.{img_ext}", img_bytes, img_mime)}
                 payload = {
-                    "chat_id": CHANNEL_ID, "caption": caption,
+                    "chat_id": CHANNEL_ID, "caption": caption_with_link,
                     "parse_mode": "HTML",
                 }
-                r = tg("sendPhoto", data=payload, files=files, timeout=20)
+                r = tg("sendPhoto", data=payload, files=files, timeout=30)
                 if r:
                     msg_id = r.json()["result"]["message_id"]
                     print(f"  Sent with image: {title[:60]} (msg#{msg_id})")
@@ -95,8 +102,8 @@ def send_post(title, desc, link, img_url, youtube_url=None, game=None, custom_ca
         except Exception as e:
             print(f"  Image err: {e}")
     r = tg("sendMessage", json={
-        "chat_id": CHANNEL_ID, "text": caption, "parse_mode": "HTML",
-    }, timeout=10)
+        "chat_id": CHANNEL_ID, "text": caption_with_link, "parse_mode": "HTML",
+    }, timeout=15)
     if r:
         msg_id = r.json()["result"]["message_id"]
         print(f"  Sent: {title[:60]} (msg#{msg_id})")
@@ -112,28 +119,29 @@ def score_news_item(item, ids, content_hashes, recent_games):
         return None
     score = 0
     desc_len = len(item.get("desc", ""))
-    score += min(desc_len / 5, 20)
+    score += min(desc_len * _SCORING["desc_score_per_char"], _SCORING["desc_max_score"])
     if extract_numbers(item.get("desc", "")):
-        score += 5
+        score += _SCORING["numbers_boost"]
     if extract_platforms(item["title"] + " " + item.get("desc", "")):
-        score += 3
+        score += _SCORING["platforms_boost"]
     game = extract_game(item["title"])
     game_lower = game.lower()
     if not is_gaming_related(item["title"], item.get("desc", "")):
-        score -= 50
+        score += _SCORING["non_gaming_penalty"]
     elif game and len(game_lower) > 3:
-        score += 10
+        score += _SCORING["game_found_boost"]
     if game_lower and len(game_lower) > 3 and game_lower in recent_games:
-        score -= 500
+        hot = any(kw in (item["title"] + " " + item.get("desc", "")).lower() for kw in PRIORITY_KEYWORDS)
+        score += _SCORING["repeat_hot_penalty"] if hot else _SCORING["repeat_penalty"]
     theme = detect_theme(item["title"], item.get("desc", ""))
     if is_hot(item):
-        score += 50
+        score += _SCORING["hot_boost"]
     if is_trailer(item["title"]):
-        score += 10
+        score += _SCORING["trailer_boost"]
     if item.get("youtube_url"):
-        score += 5
+        score += _SCORING["youtube_boost"]
     if theme == "rumor":
-        score -= 15
+        score += _SCORING["rumor_penalty"]
     item["_score"] = score
     item["_game"] = game
     item["_theme"] = theme
@@ -205,7 +213,8 @@ def fetch_epic_free_games():
                 try:
                     dt = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
                     end_readable = dt.astimezone().strftime("%d.%m.%Y %H:%M МСК")
-                except Exception:
+                except Exception as e:
+                    print(f"  Epic date parse err: {e}")
                     end_readable = end_str[:10]
             games.append({
                 "title": title, "desc": desc[:200], "image": image,
@@ -263,9 +272,10 @@ def send_deals_batch(steam_deals, epic_free, gog_free):
         lines.append("")
     if steam_deals:
         lines.append("\U0001F3AE <b>Steam</b>")
-        for d in steam_deals:
+        for d in sorted(steam_deals, key=lambda x: -x["discount"]):
             app_link = f'https://store.steampowered.com/app/{d["appid"]}/'
-            lines.append(f'\U0001F539 <a href="{app_link}">{escape_html(d["title"])} -{d["discount"]}%</a>')
+            emoji = "\U0001F525" if d["discount"] >= 90 else "\U0001F539"
+            lines.append(f'{emoji} <a href="{app_link}">{escape_html(d["title"])} -{d["discount"]}%</a>')
             lines.append(f"   \u20BD {d['final_price']:.0f} вместо {d['original_price']:.0f}")
             if d.get("expires"):
                 lines.append(f"   \U0001F512 до {d['expires']}")
@@ -339,10 +349,24 @@ def score_anime_entry(title, desc, interests):
     return score
 
 
+ANIME_EMOJI_MAP = {
+    "sequel": "\U0001F3AC",
+    "announce": "\U0001F389",
+    "drama": "\U0001F4A2",
+    "generic": "\U0001F48C",
+}
+ANIME_COMMENTARIES = [
+    "Анимешники, внимание!", "Новость из мира аниме.",
+    "Смотрим, не отрываясь.", "Для тех, кто любит субтитры.",
+    "Отаку, ваш выход.", "На заметку аниме-фанату.",
+    "Только для истинных ценителей.", "Аниме-индустрия не спит.",
+    "Берём на карандаш.", "Ждём озвучку.",
+]
+
 def anime_caption(title, desc, link):
     theme = detect_theme(title, desc)
-    emoji = THEME_EMOJI.get(theme, "\U0001F48C")
-    commentary = pick(COMMENTARIES.get(theme, COMMENTARIES["generic"]))
+    emoji = ANIME_EMOJI_MAP.get(theme, "\U0001F48C")
+    commentary = pick(ANIME_COMMENTARIES)
     ru_title = translate_en_ru(title)
     ru_desc = translate_en_ru(shorten(desc, 200))
     body = f"{ru_title}. {ru_desc}" if ru_desc else ru_title
@@ -385,35 +409,38 @@ def post_anime_news(state):
     sc, title, desc, raw_desc, link, img, source = best
     print(f"  Anime best: {title[:50]} (score={sc})")
     caption = anime_caption(title, desc, link)
-    msg_id = None
+    preview = f"\U0001F514 <b>\u041F\u0440\u0435-\u043C\u043E\u0434\u0435\u0440\u0430\u0446\u0438\u044F (\u0430\u043D\u0438\u043C\u0435)</b>\n\n{caption}"
+    mod_msg_id = None
     if img:
         try:
             img_bytes = safe_download_image(img, timeout=8)
             if img_bytes and is_hd(img_bytes):
                 ext, mime = detect_image_type(img_bytes)
                 r = tg("sendPhoto", data={
-                    "chat_id": CHANNEL_ID, "caption": caption, "parse_mode": "HTML",
+                    "chat_id": ADMIN_CHAT_ID, "caption": preview, "parse_mode": "HTML",
                 }, files={"photo": (f"anime.{ext}", img_bytes, mime)}, timeout=15)
                 if r:
-                    msg_id = r.json()["result"]["message_id"]
-        except Exception:
-            pass
-    if not msg_id:
+                    mod_msg_id = r.json()["result"]["message_id"]
+        except Exception as e:
+            print(f"  Anime preview img err: {e}")
+    if not mod_msg_id:
         r = tg("sendMessage", json={
-            "chat_id": CHANNEL_ID, "text": caption, "parse_mode": "HTML",
+            "chat_id": ADMIN_CHAT_ID, "text": preview, "parse_mode": "HTML",
         }, timeout=10)
         if r:
-            msg_id = r.json()["result"]["message_id"]
-    if msg_id:
+            mod_msg_id = r.json()["result"]["message_id"]
+    if mod_msg_id:
+        pending = state.setdefault("pending_moderation", [])
+        pending.append({
+            "title": title, "desc": desc, "link": link, "img_url": img,
+            "game": "", "source": source, "content_hash": "",
+            "msg_id": mod_msg_id, "time": time.time(),
+            "id": f"anime_{int(time.time())}",
+            "_type": "anime", "custom_caption": caption,
+            "_link": link,
+        })
         state["anime_posted"] = today
-        if link not in anime_links:
-            anime_links.append(link)
-        posted_msgs = state.setdefault("posted_msgs", {})
-        posted_msgs[str(msg_id)] = {
-            "title": title, "game": "",
-            "time": time.time(), "source": source,
-        }
-        print(f"  Anime news posted: {title[:50]}")
+        print(f"  Anime sent to moderation: {title[:50]}")
         return True
     return False
 
@@ -500,6 +527,102 @@ def game_ost_tracks(game_name, output_dir):
     return []
 
 
+def _build_rock_caption(title, desc, link, matched):
+    ru_title = translate_en_ru(title)
+    ru_desc = translate_en_ru(shorten(desc, MAX_DESC_LEN))
+    safe_title = escape_html(ru_title)
+    safe_desc = escape_html(ru_desc)
+    tags = " #" + " #".join(a.replace(" ", "_") for a in matched[:3])
+    artist = matched[0]
+    album_name = extract_album_name(title, desc)
+    album_line = ""
+    if album_name:
+        album_line = f" — новый альбом «{escape_html(album_name)}»"
+        print(f"  Album detected: {album_name}")
+    caption = f"\U0001F3B8 <b>{safe_title}</b>{album_line}\n\n{safe_desc}\n\n<a href=\"{link}\">\u041F\u043E\u0434\u0440\u043E\u0431\u043D\u0435\u0435</a>"
+    caption += f"{CHANNEL_SIGNATURE}\n{tags}"
+    return caption, artist, album_name
+
+
+def _find_rock_photo(artist, album_name, img):
+    if album_name:
+        cover_url = album_cover_url(artist, album_name)
+        if cover_url:
+            try:
+                cover_bytes = safe_download_image(cover_url, timeout=8)
+                if cover_bytes and is_hd(cover_bytes):
+                    return cover_bytes
+            except Exception as e:
+                print(f"  Rock cover download err: {e}")
+    if img:
+        try:
+            img_bytes = safe_download_image(img, timeout=8)
+            if img_bytes and is_hd(img_bytes):
+                return img_bytes
+        except Exception as e:
+            print(f"  Rock img download err: {e}")
+    return None
+
+
+def _send_rock_audio(artist, tmpdir):
+    tracks = ROCK_TRACKS.get(artist, [])
+    if not tracks:
+        print(f"  No ROCK_TRACKS for {artist}, trying fallback...")
+        for key in ROCK_TRACKS:
+            if artist in key or key in artist:
+                tracks = ROCK_TRACKS[key]
+                print(f"  Fallback matched '{key}' for '{artist}'")
+                break
+    if not tracks:
+        print(f"  No tracks found for {artist}, skipping audio")
+        return
+    os.makedirs(tmpdir, exist_ok=True)
+    # Shuffle and try up to 4 tracks, pick first 2 that work
+    pool = []
+    for tname, tquery in random.sample(tracks, min(len(tracks), 4)):
+        pool.append((tname, tquery))
+    sent_count = 0
+    max_send = min(2, len(tracks))
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        fut_map = {}
+        for tname, tquery in pool:
+            fut = executor.submit(download_audio, tquery, tmpdir)
+            fut_map[fut] = (tname, tquery)
+        for fut in as_completed(fut_map, timeout=60):
+            if sent_count >= max_send:
+                break
+            tname, tquery = fut_map[fut]
+            try:
+                results = fut.result(timeout=5)
+                path = None
+                if results:
+                    path, _ = results[0]
+                if path and os.path.exists(path):
+                    r = send_audio_file(path, tname, performer=artist.title())
+                    if r:
+                        sent_count += 1
+                        print(f"  Audio sent ({sent_count}/{max_send}): {tname}")
+                    else:
+                        print(f"  Audio send failed for {tname}")
+                else:
+                    print(f"  Audio download gave no file for {tname}")
+            except Exception as e:
+                print(f"  Audio error for {tname}: {e}")
+    if sent_count == 0:
+        print(f"  All audio downloads failed for {artist}")
+
+
+def _update_rock_state(state, msg_id, title, artist, link, source, today, rocks_links):
+    state["rock_posted"] = today
+    if link not in rocks_links:
+        rocks_links.append(link)
+    posted_msgs = state.setdefault("posted_msgs", {})
+    posted_msgs[str(msg_id)] = {
+        "title": title, "game": artist,
+        "time": time.time(), "source": source,
+    }
+
+
 def post_rock_news(state):
     today = time.strftime("%Y-%m-%d")
     last = state.get("rock_posted", "")
@@ -507,9 +630,11 @@ def post_rock_news(state):
         return False
     rocks_links = state.setdefault("posted_rock_links", [])
     artists_lower = [a.lower() for a in ROCK_ARTISTS]
+    tmpdir = os.path.join(os.path.dirname(STATE_FILE), "audio_tmp")
     for url, source, limit in ROCK_FEEDS:
         try:
-            feed = feedparser.parse(url)
+            resp = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+            feed = feedparser.parse(resp.content)
             for entry in feed.entries[:limit]:
                 raw_title = entry.get("title", "")
                 title = clean(raw_title)
@@ -525,79 +650,35 @@ def post_rock_news(state):
                     continue
                 img = rss_image(entry)
                 artists_str = ", ".join(matched[:3])
-                ru_title = translate_en_ru(title)
-                ru_desc = translate_en_ru(shorten(desc, MAX_DESC_LEN))
-                safe_title = escape_html(ru_title)
-                safe_desc = escape_html(ru_desc)
-                tags = " #" + " #".join(a.replace(" ", "_") for a in matched[:3])
-                artist = matched[0]
-                album_name = extract_album_name(title, desc)
-                album_line = ""
-                if album_name:
-                    album_line = f" — новый альбом «{escape_html(album_name)}»"
-                    print(f"  Album detected: {album_name}")
-                caption = f"\U0001F3B8 <b>{safe_title}</b>{album_line}\n\n{safe_desc}\n\n<a href=\"{link}\">\u041F\u043E\u0434\u0440\u043E\u0431\u043D\u0435\u0435</a>"
-                caption += f"{CHANNEL_SIGNATURE}\n{tags}"
-                caption_photo = None
-                if album_name:
-                    cover_url = album_cover_url(artist, album_name)
-                    if cover_url:
-                        try:
-                            cover_bytes = safe_download_image(cover_url, timeout=8)
-                            if cover_bytes and is_hd(cover_bytes):
-                                caption_photo = cover_bytes
-                        except Exception:
-                            pass
-                if not caption_photo and img:
-                    try:
-                        img_bytes = safe_download_image(img, timeout=8)
-                        if img_bytes and is_hd(img_bytes):
-                            caption_photo = img_bytes
-                    except Exception:
-                        pass
-                msg_id = None
-                if caption_photo:
-                    ext, mime = detect_image_type(caption_photo)
+                caption, artist, album_name = _build_rock_caption(title, desc, link, matched)
+                photo_bytes = _find_rock_photo(artist, album_name, img)
+                preview = f"\U0001F514 <b>\u041F\u0440\u0435-\u043C\u043E\u0434\u0435\u0440\u0430\u0446\u0438\u044F (\u0440\u043E\u043A)</b>\n\n{caption}"
+                mod_msg_id = None
+                if photo_bytes:
+                    ext, mime = detect_image_type(photo_bytes)
                     r = tg("sendPhoto", data={
-                        "chat_id": CHANNEL_ID, "caption": caption, "parse_mode": "HTML",
-                    }, files={"photo": (f"rock.{ext}", caption_photo, mime)}, timeout=15)
+                        "chat_id": ADMIN_CHAT_ID, "caption": preview, "parse_mode": "HTML",
+                    }, files={"photo": (f"rock.{ext}", photo_bytes, mime)}, timeout=15)
                     if r:
-                        msg_id = r.json()["result"]["message_id"]
-                if not msg_id:
+                        mod_msg_id = r.json()["result"]["message_id"]
+                if not mod_msg_id:
                     r = tg("sendMessage", json={
-                        "chat_id": CHANNEL_ID, "text": caption, "parse_mode": "HTML",
+                        "chat_id": ADMIN_CHAT_ID, "text": preview, "parse_mode": "HTML",
                     }, timeout=10)
                     if r:
-                        msg_id = r.json()["result"]["message_id"]
-                if msg_id:
-                    tracks = ROCK_TRACKS.get(artist, [])
-                    if len(tracks) >= 2:
-                        picked = random.sample(tracks, 2)
-                        tmpdir = os.path.join(os.path.dirname(STATE_FILE), "audio_tmp")
-                        os.makedirs(tmpdir, exist_ok=True)
-                        for tname, tquery in picked:
-                            results = download_audio(tquery, tmpdir)
-                            path = None
-                            if results:
-                                path, _ = results[0]
-                            if path and os.path.exists(path):
-                                r = send_audio_file(path, tname, performer=artist.title())
-                                if r:
-                                    print(f"  Audio sent: {tname} (msg#{r.json()['result']['message_id']})")
-                                else:
-                                    print(f"  Audio send failed for {tname}")
-                            else:
-                                print(f"  Audio download failed for {tname}")
-                if msg_id:
+                        mod_msg_id = r.json()["result"]["message_id"]
+                if mod_msg_id:
+                    pending = state.setdefault("pending_moderation", [])
+                    pending.append({
+                        "title": title, "desc": desc, "link": link, "img_url": img,
+                        "game": artist, "source": source, "content_hash": "",
+                        "msg_id": mod_msg_id, "time": time.time(),
+                        "id": f"rock_{int(time.time())}",
+                        "_type": "rock", "custom_caption": caption,
+                        "_artist": artist, "_tmpdir": tmpdir, "_link": link,
+                    })
                     state["rock_posted"] = today
-                    if link not in rocks_links:
-                        rocks_links.append(link)
-                    posted_msgs = state.setdefault("posted_msgs", {})
-                    posted_msgs[str(msg_id)] = {
-                        "title": title, "game": artist,
-                        "time": time.time(), "source": source,
-                    }
-                    print(f"  Rock news posted: {title[:50]} [{artists_str}]")
+                    print(f"  Rock sent to moderation: {title[:50]} [{artists_str}]")
                     return True
         except Exception as e:
             print(f"  Rock feed {source} err: {e}")
@@ -660,6 +741,14 @@ def send_daily_admin_stats(state):
     pending = state.get("pending_moderation", [])
     lines = ["\U0001F4CB <b>Статистика дня</b>", ""]
     lines.append(f"\U0001F4F0 Постов сегодня: <b>{total_today}</b>")
+    subs = 0
+    try:
+        r = tg("getChatMemberCount", json={"chat_id": CHANNEL_ID}, timeout=8)
+        if r:
+            subs = r.json().get("result", 0)
+            lines.append(f"\U0001F465 Подписчиков: <b>{subs}</b>")
+    except Exception as e:
+        print(f"  getChatMemberCount err: {e}")
     if source_counts:
         lines.append("")
         lines.append("\U0001F4E1 <b>Источники:</b>")
@@ -669,7 +758,7 @@ def send_daily_admin_stats(state):
         lines.append("")
         lines.append(f"\U0001F514 В модерации: <b>{len(pending)}</b>")
     lines.append("")
-    lines.append("<i>Бот работает в штатном режиме</i>")
+    lines.append(f"<i>Бот работает в штатном режиме</i>")
     text = "\n".join(lines)
     r = tg("sendMessage", json={
         "chat_id": ADMIN_CHAT_ID,
@@ -677,57 +766,128 @@ def send_daily_admin_stats(state):
     }, timeout=10)
     if r:
         state["last_daily_admin_stats"] = today
-        print(f"  Daily admin stats sent ({total_today} posts)")
+        print(f"  Daily admin stats sent ({total_today} posts, {subs} subs)")
         return True
     return False
 
 
-def post_listener_track(state):
-    track = state.get("listener_track")
-    if not track:
-        return False
+def post_listener_chart(state):
+    tracks = state.get("listener_tracks", [])
     current_week = time.strftime("%Y-W%V")
-    if track.get("week") != current_week:
-        del state["listener_track"]
+    week_tracks = [t for t in tracks if t.get("week") == current_week]
+    if not week_tracks:
         return False
-    text = track["text"]
-    from_name = track.get("from", "Подписчик")
-    tmpdir = os.path.join(os.path.dirname(STATE_FILE), "audio_tmp")
-    os.makedirs(tmpdir, exist_ok=True)
-    safe_query = re.sub(r"[^a-zA-Z0-9а-яА-ЯёЁ\s\-—–\'\"@]", "", text)[:100]
-    if not safe_query.strip():
-        print(f"  Listener track sanitized to empty, skipping")
-        return False
-    results = download_audio(safe_query, tmpdir)
-    path = None
-    real_title = text
-    if results:
-        path, real_title = results[0]
-    if path and os.path.exists(path):
-        r = send_audio_file(path, text[:60], performer=from_name)
-        if not r:
-            return False
-        del state["listener_track"]
-        print(f"  Listener track posted: {text[:50]}")
+    lines = ["\U0001F3B5 <b>Листенер-чарт этой недели</b>", ""]
+    for i, t in enumerate(week_tracks[:15], 1):
+        from_name = t.get("from", "Подписчик")
+        lines.append(f"{i}. {escape_html(t['text'][:80])} — <i>{escape_html(from_name)}</i>")
+    if len(week_tracks) > 15:
+        lines.append("")
+        lines.append(f"И ещё {len(week_tracks) - 15} треков")
+    text = "\n".join(lines)
+    r = tg("sendMessage", json={
+        "chat_id": CHANNEL_ID, "text": text,
+        "parse_mode": "HTML",
+    }, timeout=10)
+    if r:
+        state["listener_tracks"] = [t for t in tracks if t.get("week") != current_week]
+        print(f"  Listener chart posted ({len(week_tracks)} tracks)")
         return True
-    else:
-        print(f"  Could not download listener track: {text[:60]}")
+    return False
+
+
+def post_weekly_poll(state):
+    last_poll = state.get("last_weekly_poll", "")
+    today = time.strftime("%Y-%m-%d")
+    # Only on Sunday
+    if time.strftime("%w") != "0":
         return False
+    if last_poll == today:
+        return False
+    polls = [
+        {
+            "question": "\U0001F3AE Какой трейлер ждёте больше всего?",
+            "options": ["GTA VI", "The Witcher 4", "Metroid Prime 4", "Cтейлз у камня"],
+        },
+        {
+            "question": "\U0001F4F0 Какая новость была самой интересной на неделе?",
+            "options": ["Анонсы игр", "Скидки и раздачи", "Железо", "Слухи и инсайды"],
+        },
+        {
+            "question": "\U0001F3B2 Во что играете сейчас?",
+            "options": ["AAA-проект", "Инди", "Мультиплеер", "Прохожу старую классику"],
+        },
+    ]
+    poll_chat_id = state.get("_linked_chat_id") or ADMIN_CHAT_ID
+    poll_idx = state.setdefault("poll_index", 0) % len(polls)
+    poll = polls[poll_idx]
+    r = tg("sendPoll", json={
+        "chat_id": poll_chat_id,
+        "question": poll["question"],
+        "options": poll["options"],
+        "is_anonymous": False,
+        "type": "regular",
+    }, timeout=10)
+    if r:
+        state["poll_index"] = poll_idx + 1
+        state["last_weekly_poll"] = today
+        print(f"  Weekly poll sent: {poll['question'][:40]}")
+        return True
+    return False
+
+
+def post_weekly_comments(state):
+    last_comments_post = state.get("last_weekly_comments", "")
+    today = time.strftime("%Y-%m-%d")
+    if time.strftime("%w") != "0":
+        return False
+    if last_comments_post == today:
+        return False
+    comments = state.get("weekly_comments", [])
+    week_ago = time.time() - 86400 * 7
+    week_comments = [c for c in comments if c.get("time", 0) > week_ago]
+    if len(week_comments) < 3:
+        return False
+    import heapq
+    best = heapq.nlargest(3, week_comments, key=lambda x: len(x.get("text", "")))
+    lines = ["\U0001F4AC <b>Комментарии недели</b>", ""]
+    for i, c in enumerate(best, 1):
+        from_name = escape_html(c.get("from", "Подписчик"))
+        text = escape_html(c["text"][:200])
+        lines.append(f"{i}. <i>{from_name}:</i>")
+        lines.append(f"   {text}")
+        lines.append("")
+    text = "\n".join(lines).strip()
+    if not text:
+        return False
+    r = tg("sendMessage", json={
+        "chat_id": CHANNEL_ID, "text": text,
+        "parse_mode": "HTML",
+    }, timeout=10)
+    if r:
+        state["last_weekly_comments"] = today
+        # Clear old comments
+        state["weekly_comments"] = [c for c in comments if c.get("time", 0) <= week_ago]
+        print(f"  Weekly comments posted ({len(week_comments)} collected, {len(best)} selected)")
+        return True
+    return False
 
 
 def fetch_news():
     _state = get_global_state("state", {})
     _feed_errors = _state.get("feed_errors", {})
+    _feed_lock = threading.Lock()
 
     def fetch_one(url, source, limit):
-        src_err = _feed_errors.get(source, {})
+        with _feed_lock:
+            src_err = _feed_errors.get(source, {})
         if src_err.get("count", 0) > 3 and time.time() - src_err.get("time", 0) < 3600:
             print(f"  {source}: skipped (circuit breaker, {src_err['count']} errors)")
             return []
         entries = []
         for attempt in range(2):
             try:
-                resp = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+                resp = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
                 feed = feedparser.parse(resp.content)
                 seen = set()
                 for entry in feed.entries[:limit]:
@@ -748,8 +908,9 @@ def fetch_news():
                         "content_hash": h,
                     })
                 print(f"  {source}: {len(feed.entries)} items")
-                _feed_errors[source] = {"count": 0, "time": 0}
-                _state["feed_errors"] = _feed_errors
+                with _feed_lock:
+                    _feed_errors[source] = {"count": 0, "time": 0}
+                    _state["feed_errors"] = _feed_errors
                 return entries
             except Exception as e:
                 if attempt == 0:
@@ -757,8 +918,9 @@ def fetch_news():
                     time.sleep(5)
                 else:
                     print(f"  {source} retry failed: {e}")
-                    _feed_errors[source] = {"count": src_err.get("count", 0) + 1, "time": time.time()}
-                    _state["feed_errors"] = _feed_errors
+                    with _feed_lock:
+                        _feed_errors[source] = {"count": src_err.get("count", 0) + 1, "time": time.time()}
+                        _state["feed_errors"] = _feed_errors
         return entries
 
     all_items = []
@@ -766,6 +928,12 @@ def fetch_news():
         futures = [pool.submit(fetch_one, url, s, lim) for url, s, lim in RSS_FEEDS]
         for fut in as_completed(futures):
             all_items.extend(fut.result())
+
+    # Log feed errors
+    errs = [(s, e) for s, e in _feed_errors.items() if e.get("count", 0) > 0]
+    if errs:
+        for src, e in errs:
+            print(f"  Feed [{src}]: {e.get('count', 0)} errors, last: {time.strftime('%H:%M', time.localtime(e.get('time', 0)))}")
 
     seen_hashes = set()
     items = []
