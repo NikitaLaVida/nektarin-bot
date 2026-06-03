@@ -14,6 +14,7 @@ from bot.config import (
     CHANNEL_ID, STATE_FILE, CHANNEL_SIGNATURE,
     ADMIN_CHAT_ID,
     ANIME_FEEDS, ROCK_FEEDS, ROCK_ARTISTS, ROCK_TRACKS,
+    ANIME_EMOJI_MAP, ANIME_COMMENTARIES,
     MAX_DESC_LEN, PRIORITY_KEYWORDS,
     MAX_CAPTION_LEN, MAX_IMAGE_SIZE, _SEP,
     RSS_FEEDS, get_global_state, _SCORING,
@@ -368,20 +369,6 @@ def score_anime_entry(title, desc, interests):
             score += 10
     return score
 
-
-ANIME_EMOJI_MAP = {
-    "sequel": "\U0001F3AC",
-    "announce": "\U0001F389",
-    "drama": "\U0001F4A2",
-    "generic": "\U0001F48C",
-}
-ANIME_COMMENTARIES = [
-    "Анимешники, внимание!", "Новость из мира аниме.",
-    "Смотрим, не отрываясь.", "Для тех, кто любит субтитры.",
-    "Отаку, ваш выход.", "На заметку аниме-фанату.",
-    "Только для истинных ценителей.", "Аниме-индустрия не спит.",
-    "Берём на карандаш.", "Ждём озвучку.",
-]
 
 def anime_caption(title, desc, link):
     theme = detect_theme(title, desc)
