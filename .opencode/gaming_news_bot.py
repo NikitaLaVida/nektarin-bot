@@ -11,7 +11,7 @@ from bot.config import (
     STATE_FILE, LOG_FILE, CHANNEL_ID, CHANNEL_SIGNATURE,
     ADMIN_CHAT_ID, SILENT_HOURS, MODERATION_INTERVAL,
     MODERATION_TTL, set_global_state, WATCHED_GAMES,
-    validate_config,
+    validate_config, _SCORING,
 )
 from bot.core import (
     _get_token, tg, save_state, escape_html,
@@ -145,7 +145,7 @@ def _fetch_and_score(state, ids):
 def _post_watched_auto(state, ids, unseen):
     posted = 0
     for item in unseen:
-        if any(w in item.get("_game", "").lower() for w in WATCHED_GAMES) and item["_score"] > 30:
+        if any(w in item.get("_game", "").lower() for w in WATCHED_GAMES) and item["_score"] > _SCORING["min_watched_auto_score"]:
             print(f"  WATCHED_GAMES auto-post: {item['title'][:50]}")
             img = find_post_image(item)
             msg_id = send_post(item["title"], item.get("desc", ""), item["link"], img,
