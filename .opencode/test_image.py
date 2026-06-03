@@ -1,6 +1,7 @@
-import requests, sys
+import sys
 sys.argv = ['test']
-exec(open(r'C:\Users\La Vida Loca\.opencode\gaming_news_bot.py', encoding='utf-8').read().split('if __name__')[0])
+from bot.core import extract_game
+from bot.images import steam_image
 
 titles = [
     'New screenshots of a castle from Elden Ring',
@@ -17,4 +18,3 @@ for t in titles:
     else:
         print(f'NO: {t[:30]:30s} -> {game:15s} -> no img')
 print('Done')
-

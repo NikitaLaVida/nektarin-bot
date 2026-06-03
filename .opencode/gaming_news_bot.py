@@ -18,7 +18,7 @@ from bot.core import (
     _get_token, tg, save_state, escape_html,
     extract_game, process_updates,
     get_recent_game_names, title_similarity,
-    load_state, send_audio_file,
+    load_state, send_audio_file, send_preview,
 )
 from bot.security import (
     security_check, _acquire_lock, _release_lock, _safe_exit,
@@ -57,11 +57,11 @@ def _init_state():
                     p = os.path.join(tmpdir, f)
                     if os.path.isfile(p):
                         os.remove(p)
-                except Exception as _:
-                    pass
+                except Exception as _e:
+                    print(f"  audio_tmp file remove err: {_e}")
             print(f"  Cleaned up audio_tmp/")
-        except Exception as _:
-            pass
+        except Exception as _e:
+            print(f"  audio_tmp cleanup err: {_e}")
     return state, ids
 
 
@@ -168,8 +168,8 @@ def _post_watched_auto(state, ids, unseen):
                     tg("sendMessage", json={"chat_id": ADMIN_CHAT_ID,
                         "text": f"\U0001F4E6 <b>Авто-пост:</b> {escape_html(item['_game'] or item['title'][:30])}",
                         "parse_mode": "HTML"}, timeout=8)
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"  Auto-post notify err: {e}")
             break
     return posted
 
@@ -177,22 +177,15 @@ def _post_watched_auto(state, ids, unseen):
 def _send_moderation_preview(item, pending, pending_ids):
     img = find_post_image(item)
     preview = f"\U0001F514 <b>Пре-модерация</b>\n\n{make_caption(item['title'], item.get('desc',''), item['link'], item['_game'])}"
-    mod_msg_id = None
+    img_bytes = None
     if img:
         try:
             b = safe_download_image(img, timeout=15)
             if b and is_hd(b):
-                ext, mime = detect_image_type(b)
-                r = tg("sendPhoto", data={"chat_id": ADMIN_CHAT_ID, "caption": preview,
-                    "parse_mode": "HTML"}, files={"photo": (f"p.{ext}", b, mime)}, timeout=25)
-                if r:
-                    mod_msg_id = r.json()["result"]["message_id"]
+                img_bytes = b
         except Exception as e:
             print(f"  Mod preview img err: {e}")
-    if not mod_msg_id:
-        r = tg("sendMessage", json={"chat_id": ADMIN_CHAT_ID, "text": preview, "parse_mode": "HTML"}, timeout=15)
-        if r:
-            mod_msg_id = r.json()["result"]["message_id"]
+    mod_msg_id = send_preview(ADMIN_CHAT_ID, preview, img_bytes=img_bytes, timeout=25)
     if mod_msg_id:
         pending.append({
             "title": item["title"], "desc": item.get("desc",""), "link": item["link"],
@@ -383,7 +376,8 @@ def _cleanup_state(state, ids):
         "posted_rock_links","posted_anime_links","last_deals_date","content_hashes",
         "last_daily_admin_stats","_bot_id","_linked_chat_id","listener_tracks",
         "last_moderation_sent","pending_moderation","moderation_offset","weekly_comments",
-        "_last_security_check","feed_errors","last_weekly_poll","poll_index","last_weekly_comments"}
+        "_last_security_check","feed_errors","last_weekly_poll","poll_index","last_weekly_comments",
+        "learning","last_posted_themes"}
     for k in list(state.keys()):
         if k not in keep:
             del state[k]
@@ -654,8 +648,8 @@ def _handle_crash(e, fatal=True):
     if fatal:
         try:
             _safe_exit()
-        except Exception:
-            pass
+        except Exception as _e:
+            print(f"  _safe_exit err: {_e}")
     try:
         bot_token = _get_token()
         if bot_token:
@@ -663,5 +657,5 @@ def _handle_crash(e, fatal=True):
                 "chat_id": ADMIN_CHAT_ID,
                 "text": f"\u26A0 Bot {'crashed' if fatal else 'error'}:\n\n{str(e)[:200]}",
             }, timeout=8)
-    except Exception:
-        pass
+    except Exception as _e:
+        print(f"  Crash alert send err: {_e}")

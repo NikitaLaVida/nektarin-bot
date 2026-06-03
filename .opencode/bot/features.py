@@ -5,7 +5,6 @@ import random
 import hashlib
 import glob
 import threading
-import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 import feedparser
@@ -26,15 +25,13 @@ from bot.core import (
     extract_game, extract_numbers, extract_platforms,
     detect_genre, detect_theme, is_gaming_related,
     get_recent_game_names, send_error,
-    extract_youtube, is_hd, pick, send_audio_file,
-    COMMENTARIES, THEME_EMOJI, THEME_HASHTAGS,
+    extract_youtube, is_hd, pick, send_audio_file, send_preview,
+    THEME_EMOJI, THEME_HASHTAGS,
     TEMPLATES,
 )
 from bot.security import safe_download_image, detect_image_type
 from bot.images import find_image, rss_image, find_post_image
 from bot.learning import apply_game_override, source_score_mod
-
-logger = logging.getLogger(__name__)
 
 
 def _is_english(text):
@@ -432,26 +429,16 @@ def post_anime_news(state):
     sc, title, desc, raw_desc, link, img, source = best
     print(f"  Anime best: {title[:50]} (score={sc})")
     caption = anime_caption(title, desc, link)
-    preview = f"\U0001F514 <b>\u041F\u0440\u0435-\u043C\u043E\u0434\u0435\u0440\u0430\u0446\u0438\u044F (\u0430\u043D\u0438\u043C\u0435)</b>\n\n{caption}"
-    mod_msg_id = None
+    preview = f"\U0001F514 <b>Пре-модерация (аниме)</b>\n\n{caption}"
+    img_bytes = None
     if img:
         try:
-            img_bytes = safe_download_image(img, timeout=8)
-            if img_bytes and is_hd(img_bytes):
-                ext, mime = detect_image_type(img_bytes)
-                r = tg("sendPhoto", data={
-                    "chat_id": ADMIN_CHAT_ID, "caption": preview, "parse_mode": "HTML",
-                }, files={"photo": (f"anime.{ext}", img_bytes, mime)}, timeout=15)
-                if r:
-                    mod_msg_id = r.json()["result"]["message_id"]
+            b = safe_download_image(img, timeout=8)
+            if b and is_hd(b):
+                img_bytes = b
         except Exception as e:
             print(f"  Anime preview img err: {e}")
-    if not mod_msg_id:
-        r = tg("sendMessage", json={
-            "chat_id": ADMIN_CHAT_ID, "text": preview, "parse_mode": "HTML",
-        }, timeout=10)
-        if r:
-            mod_msg_id = r.json()["result"]["message_id"]
+    mod_msg_id = send_preview(ADMIN_CHAT_ID, preview, img_bytes=img_bytes, timeout=15)
     if mod_msg_id:
         pending = state.setdefault("pending_moderation", [])
         pending.append({
@@ -679,21 +666,8 @@ def post_rock_news(state):
                 artists_str = ", ".join(matched[:3])
                 caption, artist, album_name = _build_rock_caption(title, desc, link, matched)
                 photo_bytes = _find_rock_photo(artist, album_name, img)
-                preview = f"\U0001F514 <b>\u041F\u0440\u0435-\u043C\u043E\u0434\u0435\u0440\u0430\u0446\u0438\u044F (\u0440\u043E\u043A)</b>\n\n{caption}"
-                mod_msg_id = None
-                if photo_bytes:
-                    ext, mime = detect_image_type(photo_bytes)
-                    r = tg("sendPhoto", data={
-                        "chat_id": ADMIN_CHAT_ID, "caption": preview, "parse_mode": "HTML",
-                    }, files={"photo": (f"rock.{ext}", photo_bytes, mime)}, timeout=15)
-                    if r:
-                        mod_msg_id = r.json()["result"]["message_id"]
-                if not mod_msg_id:
-                    r = tg("sendMessage", json={
-                        "chat_id": ADMIN_CHAT_ID, "text": preview, "parse_mode": "HTML",
-                    }, timeout=10)
-                    if r:
-                        mod_msg_id = r.json()["result"]["message_id"]
+                preview = f"\U0001F514 <b>Пре-модерация (рок)</b>\n\n{caption}"
+                mod_msg_id = send_preview(ADMIN_CHAT_ID, preview, img_bytes=photo_bytes, timeout=15)
                 if mod_msg_id:
                     pending = state.setdefault("pending_moderation", [])
                     pending.append({

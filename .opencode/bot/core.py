@@ -4,7 +4,6 @@ import json
 import re
 import time
 import random
-import logging
 import requests
 import io
 from functools import lru_cache
@@ -24,7 +23,7 @@ from bot.config import (
     CHANNEL_ID, BOT_TOKEN, _SEP, TG_PROXY as TG_PROXY_VAL,
 )
 
-logger = logging.getLogger(__name__)
+
 def log(*args, **kwargs):
     safe = []
     for a in args:
@@ -94,8 +93,8 @@ def _translate_fallback(text):
         if r.status_code == 200:
             data = r.json()
             return data.get("translation", text)
-    except Exception:
-        pass
+    except Exception as e:
+        log(f"  lingva fallback err: {e}")
     try:
         r = requests.get(
             "https://translate.googleapis.com/translate_a/single",
@@ -107,8 +106,8 @@ def _translate_fallback(text):
             result = "".join(p[0] for p in parts[0] if p[0])
             if result:
                 return result
-    except Exception:
-        pass
+    except Exception as e:
+        log(f"  google translate fallback err: {e}")
     return text
 
 def translate_en_ru(text):
@@ -181,8 +180,18 @@ def title_similarity(a, b):
 
 def load_state():
     if os.path.exists(STATE_FILE):
-        with open(STATE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+        try:
+            with open(STATE_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            log(f"  Corrupt state file, starting fresh: {e}")
+            import shutil
+            bak = STATE_FILE + f".corrupt.{int(time.time())}"
+            try:
+                shutil.copy2(STATE_FILE, bak)
+                log(f"  Backed up corrupt state to {bak}")
+            except Exception:
+                pass
     return {"ids": {}}
 
 
@@ -343,6 +352,26 @@ def send_error(msg):
         }, timeout=8)
     except Exception as e:
         log(f"  send_error failed: {e}")
+
+
+def send_preview(chat_id, preview_text, img_bytes=None, img_ext="jpg", img_mime="image/jpeg", timeout=15):
+    mod_msg_id = None
+    if img_bytes:
+        try:
+            r = tg("sendPhoto", data={
+                "chat_id": chat_id, "caption": preview_text, "parse_mode": "HTML",
+            }, files={"photo": (f"preview.{img_ext}", img_bytes, img_mime)}, timeout=timeout)
+            if r:
+                mod_msg_id = r.json()["result"]["message_id"]
+        except Exception as e:
+            log(f"  Preview img err: {e}")
+    if not mod_msg_id:
+        r = tg("sendMessage", json={
+            "chat_id": chat_id, "text": preview_text, "parse_mode": "HTML",
+        }, timeout=timeout)
+        if r:
+            mod_msg_id = r.json()["result"]["message_id"]
+    return mod_msg_id
 
 
 def is_hd(img_data):
@@ -659,54 +688,6 @@ def smart_comment(theme, game, title):
         ],
     }
     return random.choice(ctx.get(theme, ctx["generic"]))
-
-
-COMMENTARIES = {
-    "sales": [
-        "Ого, неплохо продаётся!", "Народ знает толк.",
-        "Миллионеры, блин.", "Кассовый успех на лицо.",
-        "А вы уже купили или ждёте скидку?",
-        "Только цифры, без эмоций.", "Продажи говорят сами за себя.",
-        "Рекорд за рекордом!", "Статистика впечатляет.",
-    ],
-    "delay": [
-        "Ну вот, опять перенос...", "Ждали? Потерпите ещё.",
-        "Классика жанра — очередной перенос.",
-        "Видимо, решили допилить до ума.", "Не судьба пока.",
-        "Перенос — это новые баги.", "Лучше позже, чем сырым.",
-        "Когда уже?", "Терпение, друзья.",
-    ],
-    "sequel": [
-        "О, а вот это интересно.", "Продолжение следует!",
-        "Надо будет обязательно глянуть.",
-        "Вернуться во вселенную — отличная идея.",
-        "Сиквел, которого все ждали.",
-        "Старые герои, новая история.", "Надеемся, не запорят.",
-        "Фанбаза ликует.", "Даёшь продолжение!",
-    ],
-    "console": [
-        "Консольщики, внимание.", "Эксклюзивчик подвезли.",
-        "На консолях тоже праздник.", "Поиграть можно будет и на диване.",
-        "Теперь и на консолях.", "Консольный гейминг жив.",
-        "Платформ больше — игроков больше.",
-    ],
-    "drama": [
-        "Ой, всё...", "Скандалы, интриги, расследования.",
-        "Драма на ровном месте.", "Без хайпа никак.",
-        "И снова вокруг игры шум.", "Горячая тема недели.",
-        "А вы на чьей стороне?", "Шторм в стакане воды.",
-        "Когда уже утихнет?", "Драма драмой, а хайп живёт.",
-    ],
-    "generic": [
-        "Вот такое дело.", "Новости игропрома.",
-        "Держите в курсе.", "Будет интересно.", "На заметку.",
-        "Понеслась душа в рай.", "Ну, погнали!",
-        "Игровая индустрия не спит.", "Интересный поворот.",
-        "Без комментариев. Но мы оставим.", "А вы что думаете?",
-        "Тренд или случайность?", "Ждём-с.",
-        "В мире игр ничего не меняется.", "Очередной виток спирали.",
-    ],
-}
 
 
 THEME_EMOJI = {

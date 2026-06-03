@@ -1,9 +1,8 @@
-# -*- coding: utf-8 -*-
 import sys
 sys.argv = ['test']
-exec(open(r'C:\Users\La Vida Loca\.opencode\gaming_news_bot.py', encoding='utf-8').read().split('if __name__')[0])
+from bot.core import extract_game
+from bot.images import steam_image, wiki_image
 
-# Russian titles from actual feeds
 titles = [
     'В сети появились новые скриншоты замка из Elden Ring',
     'Elden Ring — новый патч вышел',
@@ -15,5 +14,5 @@ for t in titles:
     img = steam_image(game)
     print(f'{t[:35]:35s} -> game={game!r:25s} -> img={img is not None}')
     if not img:
-        wiki = wiki_image(game)
-        print(f'  wiki={wiki is not None}')
+        w = wiki_image(game)
+        print(f'  wiki={w is not None}')
