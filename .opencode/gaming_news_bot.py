@@ -311,7 +311,7 @@ def _post_rock_audio_worker(artist, tmpdir):
 
 def _run_weekly_tasks(state, now_wday, now_h):
     if now_wday != 6 or now_h != 12:
-        return
+        return 0
     posted = 0
     stats = make_channel_stats(state)
     if stats:
