@@ -125,7 +125,7 @@ def send_post(title, desc, link, img_url, youtube_url=None, game=None, custom_ca
 
 
 def score_news_item(item, ids, content_hashes, recent_games, learning=None):
-    if item["id"] in ids:
+    if item.get("id") in ids:
         return None
     if str(item.get("content_hash", "")) in content_hashes:
         return None
