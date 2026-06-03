@@ -199,7 +199,7 @@ def _process_moderation(state, ids, unseen):
         msg_id_posted = send_post(
             p.get("title",""), p.get("desc",""), p.get("link",""),
             p.get("img_url"), p.get("youtube_url"), p.get("game"),
-            caption=custom_cap,
+            custom_caption=custom_cap,
         )
         if msg_id_posted:
             _track_posted_item(state, ids, p, msg_id_posted, learning)
