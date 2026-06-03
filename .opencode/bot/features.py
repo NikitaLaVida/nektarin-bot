@@ -18,6 +18,7 @@ from bot.config import (
     MAX_DESC_LEN, PRIORITY_KEYWORDS,
     MAX_CAPTION_LEN, MAX_IMAGE_SIZE, _SEP,
     RSS_FEEDS, get_global_state, _SCORING,
+    POST_LOG_FILE,
 )
 from bot.core import (
     tg, escape_html, clean, clean_desc,
@@ -80,6 +81,17 @@ def make_caption(title, desc, link, game=None):
     return caption
 
 
+def _log_post_history(title, game, source, msg_id):
+    try:
+        ts = time.strftime("%Y-%m-%d %H:%M:%S")
+        line = f"{ts} | {msg_id} | {source} | {game or ''} | {title[:60]}"
+        os.makedirs(os.path.dirname(POST_LOG_FILE), exist_ok=True)
+        with open(POST_LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception as e:
+        print(f"  Post history log err: {e}")
+
+
 def send_post(title, desc, link, img_url, youtube_url=None, game=None, custom_caption=None):
     caption = custom_caption or make_caption(title, desc, link, game)
     caption_with_link = f"{caption}\n\n{youtube_url}" if youtube_url else caption
@@ -97,6 +109,7 @@ def send_post(title, desc, link, img_url, youtube_url=None, game=None, custom_ca
                 if r:
                     msg_id = r.json()["result"]["message_id"]
                     print(f"  Sent with image: {title[:60]} (msg#{msg_id})")
+                    _log_post_history(title, game, "photo", msg_id)
                     return msg_id
             print(f"  Image failed or too small, sending text")
         except Exception as e:
@@ -107,6 +120,7 @@ def send_post(title, desc, link, img_url, youtube_url=None, game=None, custom_ca
     if r:
         msg_id = r.json()["result"]["message_id"]
         print(f"  Sent: {title[:60]} (msg#{msg_id})")
+        _log_post_history(title, game, "text", msg_id)
         return msg_id
     print(f"  Send failed")
     return None
@@ -485,7 +499,11 @@ def download_audio(query, output_dir, max_results=1):
             "quiet": True, "no_warnings": True,
             "default_search": "ytsearch",
             "max_filesize": 45000000,
+            "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
         }
+        cookies_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cookies.txt")
+        if os.path.exists(cookies_path):
+            opts["cookiefile"] = cookies_path
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(f"ytsearch{max_results}:{query}", download=True)
             entries = info.get("entries", [info])

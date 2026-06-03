@@ -57,6 +57,8 @@ if not _DATA_DIR:
     _DATA_DIR = os.path.expanduser("~/.opencode")
 STATE_FILE = os.path.join(_DATA_DIR, "bot_state.json")
 LOG_FILE = os.path.join(_DATA_DIR, "bot.log")
+POST_LOG_FILE = os.path.join(_DATA_DIR, "post_history.log")
+COOKIES_FILE = os.path.join(_DATA_DIR, "cookies.txt")
 SILENT_HOURS = range(0, 10)
 
 RSS_FEEDS = [

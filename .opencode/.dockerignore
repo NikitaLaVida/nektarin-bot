@@ -1,0 +1,12 @@
+__pycache__
+*.pyc
+.git
+.gitignore
+README.md
+bot_state.json
+post_history.log
+audio_tmp
+test_*.py
+session_log.md
+opencode.json
+.venv

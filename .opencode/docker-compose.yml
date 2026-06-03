@@ -1,0 +1,16 @@
+version: "3.9"
+
+services:
+  bot:
+    build: .
+    container_name: nektarin-bot
+    restart: unless-stopped
+    environment:
+      - TG_BOT_TOKEN=${TG_BOT_TOKEN}
+      - DATA_DIR=/data
+    volumes:
+      - bot_data:/data
+    command: ["python", "main.py", "--daemon"]
+
+volumes:
+  bot_data:

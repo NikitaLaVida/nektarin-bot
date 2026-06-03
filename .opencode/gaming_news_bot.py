@@ -288,7 +288,19 @@ def _process_moderation(state, ids, unseen):
     last_mod = state.get("last_moderation_sent", 0)
     if unseen and time.time() - last_mod >= MODERATION_INTERVAL:
         unseen_filtered = [x for x in unseen if x["id"] not in pending_ids]
-        for best in unseen_filtered[:3]:
+        # Source balancing: max 2 items per source per moderation round
+        source_count = {}
+        for p in new_pending:
+            src = p.get("source", "")
+            source_count[src] = source_count.get(src, 0) + 1
+        balanced = []
+        for x in unseen_filtered:
+            src = x.get("source", "")
+            if source_count.get(src, 0) >= 2:
+                continue
+            balanced.append(x)
+            source_count[src] = source_count.get(src, 0) + 1
+        for best in balanced[:3]:
             if _send_moderation_preview(best, new_pending, pending_ids):
                 pass
         if new_pending:
