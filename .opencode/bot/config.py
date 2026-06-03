@@ -26,6 +26,24 @@ BOT_TOKEN = BOT_TOKEN or os.environ.get("BOT_TOKEN") or os.environ.get("TG_BOT_T
 def validate_config():
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN is empty — set bot_token in bot_config.json or BOT_TOKEN env var")
+    seen_urls = set()
+    for url, name, _ in RSS_FEEDS:
+        if url in seen_urls:
+            print(f"  Config warning: duplicate RSS feed URL: {url}")
+        seen_urls.add(url)
+    if not RSS_FEEDS:
+        print("  Config warning: RSS_FEEDS is empty")
+    if not ANIME_FEEDS:
+        print("  Config warning: ANIME_FEEDS is empty")
+    if not ROCK_FEEDS:
+        print("  Config warning: ROCK_FEEDS is empty")
+    for key in ("hot_boost", "trailer_boost", "desc_score_per_char"):
+        if key not in _SCORING:
+            print(f"  Config warning: _SCORING missing key '{key}'")
+    if not ROCK_ARTISTS:
+        print("  Config warning: ROCK_ARTISTS is empty")
+    if not WATCHED_GAMES:
+        print("  Config warning: WATCHED_GAMES is empty")
 MAX_POSTS = 2
 _SCORING = {
     "hot_boost": 50, "trailer_boost": 10, "youtube_boost": 5,

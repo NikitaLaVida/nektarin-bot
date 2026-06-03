@@ -39,9 +39,6 @@ def _init_state():
     state = load_state()
     set_global_state("state", state)
     ids = state.get("ids", {})
-    if ids and isinstance(next(iter(ids.values()), None), bool):
-        ids = {k: (v if isinstance(v, dict) else {"time": 0}) for k, v in ids.items()}
-        print(f"  Migrated legacy ids")
     try:
         cutoff = time.time() - 7 * 86400
         ids = {k: v for k, v in ids.items() if v.get("time", 0) > cutoff}
@@ -273,6 +270,79 @@ _LAST_RUN_TIME = 0
 run_iteration = main
 
 
+def print_stats():
+    state = load_state()
+    posted = state.get("posted_msgs", {})
+    ids = state.get("ids", {})
+    deals = state.get("deals_posted", {})
+    pending = state.get("pending_moderation", [])
+    content_hashes = state.get("content_hashes", {})
+    learning = state.get("learning", {})
+    now = time.time()
+    day_ago = now - 86400
+    week_ago = now - 7 * 86400
+
+    total = len(posted)
+    today = sum(1 for d in posted.values() if d.get("time", 0) >= day_ago)
+    this_week = sum(1 for d in posted.values() if d.get("time", 0) >= week_ago)
+
+    source_counts = {}
+    game_counts = {}
+    for d in posted.values():
+        src = d.get("source", "other")
+        source_counts[src] = source_counts.get(src, 0) + 1
+        game = d.get("game", "")
+        if game:
+            game_counts[game] = game_counts.get(game, 0) + 1
+
+    top_games = sorted(game_counts.items(), key=lambda x: -x[1])[:10]
+    top_sources = sorted(source_counts.items(), key=lambda x: -x[1])[:10]
+
+    subs = 0
+    try:
+        r = tg("getChatMemberCount", json={"chat_id": CHANNEL_ID}, timeout=8)
+        if r:
+            subs = r.json().get("result", 0)
+    except Exception:
+        pass
+
+    print(f"\n{'='*40}")
+    print(f"  \U0001F4CA <b>NektarinBot Dashboard</b>")
+    print(f"{'='*40}")
+    print(f"  \U0001F465 Подписчиков:        {subs}")
+    print(f"  \U0001F4F0 Всего постов:         {total}")
+    print(f"  \U0001F4C5 За сегодня:           {today}")
+    print(f"  \U0001F4C6 За неделю:            {this_week}")
+    print(f"  \U0001F514 В модерации:          {len(pending)}")
+    print(f"  \U0001F4E6 Скидок отправлено:     {len(deals)}")
+    print(f"  \U0001F4C1 Уникальных URL:        {len(ids)}")
+    print(f"  \U0001F4DC Хешей контента:        {len(content_hashes)}")
+    print(f"{'='*40}")
+    if top_sources:
+        print(f"  \U0001F4E1 <b>Топ-источники:</b>")
+        for s, c in top_sources:
+            print(f"    {s}: {c}")
+    if top_games:
+        print(f"  \U0001F3AE <b>Топ-игры:</b>")
+        for g, c in top_games:
+            print(f"    {g}: {c}")
+    sq = learning.get("source_quality", {})
+    if sq:
+        print(f"  \U0001F4CA <b>Качество источников:</b>")
+        for src, data in sorted(sq.items(), key=lambda x: -x[1].get("total", 0)):
+            total = data.get("total", 0)
+            skipped = data.get("skipped", 0)
+            ratio = f"{skipped/total*100:.0f}%" if total > 0 else "-"
+            print(f"    {src}: {data.get('posted',0)}/{total} posted, skip {ratio}")
+    go = learning.get("game_overrides", {})
+    active_overrides = {k: v for k, v in go.items() if not k.startswith("_")}
+    if active_overrides:
+        print(f"  \U0001F4CB <b>Коррекции названий:</b>")
+        for k, v in sorted(active_overrides.items())[:10]:
+            print(f"    \u00AB{k[:40]}\u00BB \u2192 {v}")
+    print(f"{'='*40}\n")
+
+
 def _handle_crash(e, fatal=True):
     import traceback as _tb
     err = _tb.format_exc()
@@ -297,121 +367,5 @@ def _handle_crash(e, fatal=True):
 
 
 if __name__ == "__main__":
-    if "--stats" in sys.argv:
-        state = load_state()
-        posted = state.get("posted_msgs", {})
-        ids = state.get("ids", {})
-        deals = state.get("deals_posted", {})
-        pending = state.get("pending_moderation", [])
-        content_hashes = state.get("content_hashes", {})
-        learning = state.get("learning", {})
-        now = time.time()
-        day_ago = now - 86400
-        week_ago = now - 7 * 86400
-
-        total = len(posted)
-        today = sum(1 for d in posted.values() if d.get("time", 0) >= day_ago)
-        this_week = sum(1 for d in posted.values() if d.get("time", 0) >= week_ago)
-
-        source_counts = {}
-        game_counts = {}
-        for d in posted.values():
-            src = d.get("source", "other")
-            source_counts[src] = source_counts.get(src, 0) + 1
-            game = d.get("game", "")
-            if game:
-                game_counts[game] = game_counts.get(game, 0) + 1
-
-        top_games = sorted(game_counts.items(), key=lambda x: -x[1])[:10]
-        top_sources = sorted(source_counts.items(), key=lambda x: -x[1])[:10]
-
-        subs = 0
-        try:
-            r = tg("getChatMemberCount", json={"chat_id": CHANNEL_ID}, timeout=8)
-            if r:
-                subs = r.json().get("result", 0)
-        except Exception:
-            pass
-
-        print(f"\n{'='*40}")
-        print(f"  \U0001F4CA <b>NektarinBot Dashboard</b>")
-        print(f"{'='*40}")
-        print(f"  \U0001F465 Подписчиков:        {subs}")
-        print(f"  \U0001F4F0 Всего постов:         {total}")
-        print(f"  \U0001F4C5 За сегодня:           {today}")
-        print(f"  \U0001F4C6 За неделю:            {this_week}")
-        print(f"  \U0001F514 В модерации:          {len(pending)}")
-        print(f"  \U0001F4E6 Скидок отправлено:     {len(deals)}")
-        print(f"  \U0001F4C1 Уникальных URL:        {len(ids)}")
-        print(f"  \U0001F4DC Хешей контента:        {len(content_hashes)}")
-        print(f"{'='*40}")
-        if top_sources:
-            print(f"  \U0001F4E1 <b>Топ-источники:</b>")
-            for s, c in top_sources:
-                print(f"    {s}: {c}")
-        if top_games:
-            print(f"  \U0001F3AE <b>Топ-игры:</b>")
-            for g, c in top_games:
-                print(f"    {g}: {c}")
-        sq = learning.get("source_quality", {})
-        if sq:
-            print(f"  \U0001F4CA <b>Качество источников:</b>")
-            for src, data in sorted(sq.items(), key=lambda x: -x[1].get("total", 0)):
-                total = data.get("total", 0)
-                skipped = data.get("skipped", 0)
-                ratio = f"{skipped/total*100:.0f}%" if total > 0 else "-"
-                print(f"    {src}: {data.get('posted',0)}/{total} posted, skip {ratio}")
-        go = learning.get("game_overrides", {})
-        active_overrides = {k: v for k, v in go.items() if not k.startswith("_")}
-        if active_overrides:
-            print(f"  \U0001F4CB <b>Коррекции названий:</b>")
-            for k, v in sorted(active_overrides.items())[:10]:
-                print(f"    \u00AB{k[:40]}\u00BB \u2192 {v}")
-    elif "--mod" in sys.argv:
-        n = 3
-        for i, arg in enumerate(sys.argv):
-            if arg == "--mod" and i + 1 < len(sys.argv) and sys.argv[i + 1].isdigit():
-                n = int(sys.argv[i + 1])
-        force_moderation(n)
-    elif "--daemon" in sys.argv:
-        interval = 1200
-        for i, arg in enumerate(sys.argv):
-            if arg == "--interval" and i + 1 < len(sys.argv):
-                interval = int(sys.argv[i + 1])
-        print(f"=== Daemon mode, interval={interval}s ===")
-        def _healthcheck():
-            import socket as _socket
-            s = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
-            s.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
-            s.bind(("127.0.0.1", 8080))
-            s.listen(1)
-            s.settimeout(1)
-            while True:
-                try:
-                    conn, _ = s.accept()
-                    stale = time.time() - _LAST_RUN_TIME > interval * 2.5
-                    if stale:
-                        body = f"stale last_run={int(_LAST_RUN_TIME)}"
-                        conn.sendall(f"HTTP/1.1 503 Service Unavailable\r\nContent-Length: {len(body)}\r\n\r\n{body}".encode())
-                    else:
-                        conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
-                    conn.close()
-                except _socket.timeout:
-                    continue
-                except Exception:
-                    break
-        t = threading.Thread(target=_healthcheck, daemon=True)
-        t.start()
-        print(f"  Healthcheck on http://0.0.0.0:8080/healthz")
-        while True:
-            try:
-                main()
-            except Exception as e:
-                _handle_crash(e, fatal=False)
-            print(f"Sleeping {interval}s...")
-            time.sleep(interval)
-    else:
-        try:
-            main()
-        except Exception as e:
-            _handle_crash(e, fatal=True)
+    from bot.poller import run_cli
+    run_cli()

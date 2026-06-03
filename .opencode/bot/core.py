@@ -178,11 +178,48 @@ def title_similarity(a, b):
     return len(intersection) / len(union) if union else 0
 
 
+_STATE_MIGRATIONS = []
+
+def _register_migration(version):
+    def wrapper(fn):
+        _STATE_MIGRATIONS.insert(version, fn)
+        return fn
+    return wrapper
+
+
+@_register_migration(0)
+def _migrate_v1_ids(state):
+    ids = state.get("ids", {})
+    if ids and isinstance(next(iter(ids.values()), None), bool):
+        state["ids"] = {k: {"time": 0} for k in ids}
+        return True
+    return False
+
+
+def migrate_state(state):
+    version = state.get("_state_version", 0)
+    changed = False
+    for version in range(version, len(_STATE_MIGRATIONS)):
+        fn = _STATE_MIGRATIONS[version]
+        try:
+            if fn(state):
+                changed = True
+                log(f"  Migration v{version} applied")
+        except Exception as e:
+            log(f"  Migration v{version} failed: {e}")
+        state["_state_version"] = version + 1
+    return changed
+
+
 def load_state():
     if os.path.exists(STATE_FILE):
         try:
             with open(STATE_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                state = json.load(f)
+            if migrate_state(state):
+                save_state(state)
+                log("  State migrated and saved")
+            return state
         except (json.JSONDecodeError, OSError) as e:
             log(f"  Corrupt state file, starting fresh: {e}")
             import shutil
