@@ -141,8 +141,13 @@ def _fetch_and_score(state, ids):
 
 def _post_watched_auto(state, ids, unseen):
     posted = 0
+    last_themes = state.get("last_posted_themes", [])
     for item in unseen:
         if any(w in item.get("_game", "").lower() for w in WATCHED_GAMES) and item["_score"] > _SCORING["min_watched_auto_score"]:
+            theme = item.get("_theme", "generic")
+            if theme in last_themes:
+                print(f"  WATCHED_GAMES skip (theme {theme} recently posted): {item['title'][:40]}")
+                continue
             print(f"  WATCHED_GAMES auto-post: {item['title'][:50]}")
             img = find_post_image(item)
             msg_id = send_post(item["title"], item.get("desc", ""), item["link"], img,
@@ -156,6 +161,7 @@ def _post_watched_auto(state, ids, unseen):
                     state.setdefault("content_hashes", {})[str(ch)] = time.time()
                 ids[item["id"]] = {"time": time.time()}
                 posted += 1
+                state["last_posted_themes"] = (state.get("last_posted_themes", []) + [theme])[-3:]
                 try:
                     tg("sendMessage", json={"chat_id": ADMIN_CHAT_ID,
                         "text": f"\U0001F4E6 <b>Авто-пост:</b> {escape_html(item['_game'] or item['title'][:30])}",
@@ -304,10 +310,26 @@ def _process_moderation(state, ids, unseen):
                 continue
             balanced.append(x)
             source_count[src] = source_count.get(src, 0) + 1
-        for best in balanced[:3]:
+        # Theme diversity: prefer items with themes not seen recently
+        last_themes = state.get("last_posted_themes", [])
+        balanced.sort(key=lambda x: (last_themes.count(x.get("_theme", "generic")), -x["_score"]))
+        picked = []
+        for best in balanced:
+            if len(picked) >= 3:
+                break
+            theme = best.get("_theme", "generic")
+            if not picked or theme not in {x.get("_theme", "") for x in picked}:
+                picked.append(best)
+        if len(picked) < 3:
+            for best in balanced:
+                if best not in picked and len(picked) < 3:
+                    picked.append(best)
+        for best in picked:
             if _send_moderation_preview(best, new_pending, pending_ids):
                 pass
         if new_pending:
+            state["last_posted_themes"] = (state.get("last_posted_themes", []) +
+                [x.get("_theme", "generic") for x in picked])[-3:]
             state["last_moderation_sent"] = time.time()
     state["pending_moderation"] = new_pending
     return posted
