@@ -441,6 +441,8 @@ _LAST_RUN_TIME = 0
 _AUDIO_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="audio")
 atexit.register(lambda: _AUDIO_EXECUTOR.shutdown(wait=False))
 
+run_iteration = main  # backward compat for server's main.py
+
 
 def force_moderation(count=3):
     state = load_state()
