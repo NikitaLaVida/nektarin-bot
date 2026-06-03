@@ -25,8 +25,6 @@ from bot.config import (
 )
 
 logger = logging.getLogger(__name__)
-_orig_print = print
-
 def log(*args, **kwargs):
     safe = []
     for a in args:
@@ -34,7 +32,7 @@ def log(*args, **kwargs):
             safe.append(a.encode("utf-8", errors="replace").decode("utf-8"))
         else:
             safe.append(a)
-    _orig_print(*safe, **kwargs)
+    print(*safe, **kwargs)
 
 
 
