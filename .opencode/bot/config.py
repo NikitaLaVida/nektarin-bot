@@ -33,6 +33,8 @@ _SCORING = {
     "numbers_boost": 5, "platforms_boost": 3, "game_found_boost": 10,
     "repeat_hot_penalty": -100, "repeat_penalty": -300,
     "rumor_penalty": -15, "non_gaming_penalty": -50,
+    "source_quality_max_penalty": -50,
+    "source_quality_min_samples": 3,
     "min_watched_auto_score": 30,
 }
 _SEP = '\u2581'

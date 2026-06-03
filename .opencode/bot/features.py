@@ -32,6 +32,7 @@ from bot.core import (
 )
 from bot.security import safe_download_image, detect_image_type
 from bot.images import find_image, rss_image, find_post_image
+from bot.learning import apply_game_override, source_score_mod
 
 logger = logging.getLogger(__name__)
 
@@ -126,7 +127,7 @@ def send_post(title, desc, link, img_url, youtube_url=None, game=None, custom_ca
     return None
 
 
-def score_news_item(item, ids, content_hashes, recent_games):
+def score_news_item(item, ids, content_hashes, recent_games, learning=None):
     if item["id"] in ids:
         return None
     if str(item.get("content_hash", "")) in content_hashes:
@@ -139,6 +140,11 @@ def score_news_item(item, ids, content_hashes, recent_games):
     if extract_platforms(item["title"] + " " + item.get("desc", "")):
         score += _SCORING["platforms_boost"]
     game = extract_game(item["title"])
+    if learning:
+        override = apply_game_override(learning, item["title"])
+        if override:
+            game = override
+            item["_override"] = True
     game_lower = game.lower()
     if not is_gaming_related(item["title"], item.get("desc", "")):
         score += _SCORING["non_gaming_penalty"]
@@ -147,6 +153,9 @@ def score_news_item(item, ids, content_hashes, recent_games):
     if game_lower and len(game_lower) > 3 and game_lower in recent_games:
         hot = any(kw in (item["title"] + " " + item.get("desc", "")).lower() for kw in PRIORITY_KEYWORDS)
         score += _SCORING["repeat_hot_penalty"] if hot else _SCORING["repeat_penalty"]
+    if learning:
+        source = item.get("source", "")
+        score += source_score_mod(learning, source)
     theme = detect_theme(item["title"], item.get("desc", ""))
     if is_hot(item):
         score += _SCORING["hot_boost"]

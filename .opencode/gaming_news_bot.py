@@ -28,12 +28,8 @@ from bot.features import (
     send_post, fetch_news, score_news_item,
     fetch_steam_deals, fetch_epic_free_games, fetch_gog_free_games,
     send_deals_batch,
-    make_caption, post_listener_chart,
-    post_anime_news, post_rock_news, make_channel_stats,
-    game_ost_tracks, find_post_image, send_daily_admin_stats,
-    post_weekly_poll, post_weekly_comments,
-    _send_rock_audio,
 )
+from bot.learning import init_learning, track_source_post, track_source_skip, learn_game_override
 
 
 def _init_state():
@@ -133,8 +129,9 @@ def _fetch_and_score(state, ids):
     content_hashes = state.setdefault("content_hashes", {})
     posted_msgs = state.setdefault("posted_msgs", {})
     recent_games = get_recent_game_names(posted_msgs)
+    learning = init_learning(state)
     for item in raw:
-        scored = score_news_item(item, ids, content_hashes, recent_games)
+        scored = score_news_item(item, ids, content_hashes, recent_games, learning)
         if scored:
             unseen.append(scored)
     unseen.sort(key=lambda x: -x["_score"])
@@ -202,6 +199,7 @@ def _send_moderation_preview(item, pending, pending_ids):
 
 def _process_moderation(state, ids, unseen):
     posted = 0
+    learning = init_learning(state)
     pending = state.get("pending_moderation", [])
     active = [p for p in pending if time.time() - p.get("time", 0) <= MODERATION_TTL]
     expired = len(pending) - len(active)
@@ -218,6 +216,7 @@ def _process_moderation(state, ids, unseen):
             reply_lower = (reply or "").lower().strip()
             if not reply or reply_lower in ("skip", "пропуск", "нет", "no"):
                 print(f"  Moderation skipped: {p.get('title', '?')[:40]}")
+                track_source_skip(learning, p.get("source", "unknown"))
                 if p.get("id"):
                     pending_ids.discard(p["id"])
                 continue
@@ -234,6 +233,10 @@ def _process_moderation(state, ids, unseen):
                     caption = caption.replace(marker, f"\n\n<blockquote>{comment}</blockquote>{marker}", 1)
                 else:
                     caption = caption.replace(CHANNEL_SIGNATURE, f"\n\n<i>{comment}</i>{CHANNEL_SIGNATURE}", 1)
+                learned_game = extract_game(reply)
+                if learned_game and learned_game != p_game and len(learned_game) > 2:
+                    learn_game_override(learning, p_title, learned_game)
+                    print(f"  Learned game override: '{p_game}' -> '{learned_game}'")
             custom_cap = p.get("custom_caption")
             if custom_cap and not reply_lower.startswith("caption:"):
                 comment = escape_html(reply[:200])
@@ -247,6 +250,7 @@ def _process_moderation(state, ids, unseen):
                 custom_cap = caption
             msg_id_posted = send_post(p_title, p_desc, p_link, p_img, p_youtube, p_game, caption=custom_cap)
             if msg_id_posted:
+                track_source_post(learning, p.get("source", "unknown"))
                 posted_msgs = state.setdefault("posted_msgs", {})
                 posted_msgs[str(msg_id_posted)] = {"title": p_title, "game": p_game or "",
                     "time": time.time(), "source": p.get("source", "moderation")}
@@ -501,6 +505,7 @@ if __name__ == "__main__":
         deals = state.get("deals_posted", {})
         pending = state.get("pending_moderation", [])
         content_hashes = state.get("content_hashes", {})
+        learning = state.get("learning", {})
         now = time.time()
         day_ago = now - 86400
         week_ago = now - 7 * 86400
@@ -549,6 +554,20 @@ if __name__ == "__main__":
             print(f"  \U0001F3AE <b>Топ-игры:</b>")
             for g, c in top_games:
                 print(f"    {g}: {c}")
+        sq = learning.get("source_quality", {})
+        if sq:
+            print(f"  \U0001F4CA <b>Качество источников:</b>")
+            for src, data in sorted(sq.items(), key=lambda x: -x[1].get("total", 0)):
+                total = data.get("total", 0)
+                skipped = data.get("skipped", 0)
+                ratio = f"{skipped/total*100:.0f}%" if total > 0 else "-"
+                print(f"    {src}: {data.get('posted',0)}/{total} posted, skip {ratio}")
+        go = learning.get("game_overrides", {})
+        active_overrides = {k: v for k, v in go.items() if not k.startswith("_")}
+        if active_overrides:
+            print(f"  \U0001F4CB <b>Коррекции названий:</b>")
+            for k, v in sorted(active_overrides.items())[:10]:
+                print(f"    «{k[:40]}» → {v}")
         print(f"{'='*40}\n")
     elif "--mod" in sys.argv:
         n = 3
