@@ -7,6 +7,7 @@ from bot.config import (
     STATE_FILE, CHANNEL_ID, CHANNEL_SIGNATURE,
     ADMIN_CHAT_ID, WATCHED_GAMES, _SCORING,
     TITLE_DEDUP_MIN_WORDS, MODERATION_TTL, MODERATION_INTERVAL,
+    MAX_POSTS,
 )
 from bot.core import (
     tg, escape_html, extract_game, save_state,
@@ -52,6 +53,112 @@ def _send_moderation_preview(item, pending, pending_ids):
     return mod_msg_id is not None
 
 
+def _build_caption(p, reply):
+    p_title, p_desc, p_link, p_game = p.get("title",""), p.get("desc",""), p.get("link",""), p.get("game")
+    reply_lower = (reply or "").lower().strip()
+    if reply_lower.startswith("caption:"):
+        caption = reply[8:].strip() or make_caption(p_title, p_desc, p_link, p_game)
+        print(f"  Caption override: {caption[:60]}...")
+        return caption, None
+    caption = make_caption(p_title, p_desc, p_link, p_game)
+    comment = escape_html(reply[:200])
+    marker = "\n\nПодробнее:"
+    if marker in caption:
+        caption = caption.replace(marker, f"\n\n<blockquote>{comment}</blockquote>{marker}", 1)
+    else:
+        caption = caption.replace(CHANNEL_SIGNATURE, f"\n\n<i>{comment}</i>{CHANNEL_SIGNATURE}", 1)
+    learned_game = extract_game(reply)
+    if learned_game and learned_game != p_game and len(learned_game) > 2:
+        return caption, learned_game
+    return caption, None
+
+
+def _track_posted_item(state, ids, p, msg_id_posted, learning):
+    track_source_post(learning, p.get("source", "unknown"))
+    posted_msgs = state.setdefault("posted_msgs", {})
+    posted_msgs[str(msg_id_posted)] = {
+        "title": p.get("title",""), "game": p.get("game",""),
+        "time": time.time(), "source": p.get("source", "moderation"),
+    }
+    ch = p.get("content_hash")
+    if ch:
+        state.setdefault("content_hashes", {})[str(ch)] = time.time()
+    pid = p.get("id")
+    if pid:
+        ids[pid] = {"time": time.time()}
+    ptype = p.get("_type", "")
+    if ptype == "rock":
+        state["rock_posted"] = time.strftime("%Y-%m-%d")
+        rocks_links = state.setdefault("posted_rock_links", [])
+        rlink = p.get("_link")
+        if rlink and rlink not in rocks_links:
+            rocks_links.append(rlink)
+        artist = p.get("_artist", "")
+        if artist:
+            tmpdir = p.get("_tmpdir", "")
+            if tmpdir:
+                _AUDIO_EXECUTOR.submit(_post_rock_audio_worker, artist, tmpdir)
+    elif ptype == "anime":
+        state["anime_posted"] = time.strftime("%Y-%m-%d")
+        anime_links = state.setdefault("posted_anime_links", [])
+        alink = p.get("_link") or p.get("link")
+        if alink and alink not in anime_links:
+            anime_links.append(alink)
+    elif p.get("game") and any(w in p["game"].lower() for w in WATCHED_GAMES):
+        name = extract_game(p.get("title",""))
+        if name and len(name) > 2:
+            tmpdir = os.path.join(os.path.dirname(STATE_FILE), "audio_tmp")
+            print(f"  OST download queued for: {name}")
+            _AUDIO_EXECUTOR.submit(_post_ost_worker, name, p["title"], tmpdir)
+
+
+def _is_title_dup(title, posted_titles, threshold, min_words):
+    words_new = set(title.lower().split())
+    if len(words_new) < min_words:
+        return False
+    for old_title in posted_titles:
+        words_old = set(old_title.lower().split())
+        if len(words_old) < min_words:
+            continue
+        inter = len(words_new & words_old)
+        union = len(words_new | words_old)
+        if union > 0 and inter / union >= threshold:
+            return True
+    return False
+
+
+def _send_new_previews(unseen, pending_ids, new_pending, state):
+    sent = 0
+    unseen_filtered = [x for x in unseen if x["id"] not in pending_ids]
+    if not unseen_filtered:
+        return 0
+    last_themes = state.get("last_posted_themes", [])
+    unseen_filtered.sort(key=lambda x: (last_themes.count(x.get("_theme", "generic")), -x["_score"]))
+    posted_msgs = state.get("posted_msgs", {})
+    dedup_cutoff = time.time() - _SCORING["title_dedup_hours"] * 3600
+    posted_titles = [
+        v.get("title", "") for v in posted_msgs.values()
+        if v.get("time", 0) >= dedup_cutoff and v.get("title")
+    ]
+    threshold = _SCORING["title_dedup_threshold"]
+    min_words = TITLE_DEDUP_MIN_WORDS
+    for idx, best in enumerate(unseen_filtered):
+        if _is_title_dup(best["title"], posted_titles, threshold, min_words):
+            continue
+        if _send_moderation_preview(best, new_pending, pending_ids):
+            sent += 1
+            if sent >= MAX_POSTS:
+                remaining = len(unseen_filtered) - idx - 1
+                print(f"  Moderation limit reached ({MAX_POSTS}), skipped {remaining} items")
+                break
+    if new_pending:
+        themes = [x.get("_theme", "generic") for x in unseen_filtered[:3]]
+        state["last_posted_themes"] = (state.get("last_posted_themes", []) + themes)[-3:]
+        state["last_moderation_sent"] = time.time()
+        print(f"  Sent {sent} items for moderation")
+    return sent
+
+
 def _process_moderation(state, ids, unseen):
     posted = 0
     learning = init_learning(state)
@@ -66,123 +173,45 @@ def _process_moderation(state, ids, unseen):
     new_pending = []
     for p in active:
         msg_id = p.get("msg_id")
-        if msg_id and msg_id in replies:
-            reply = replies[msg_id]
-            reply_lower = (reply or "").lower().strip()
-            if not reply or reply_lower in ("skip", "пропуск", "нет", "no"):
-                print(f"  Moderation skipped: {p.get('title', '?')[:40]}")
-                track_source_skip(learning, p.get("source", "unknown"))
-                if p.get("id"):
-                    pending_ids.discard(p["id"])
-                continue
-            p_title, p_desc, p_link = p.get("title",""), p.get("desc",""), p.get("link","")
-            p_img, p_youtube, p_game = p.get("img_url"), p.get("youtube_url"), p.get("game")
-            if reply_lower.startswith("caption:"):
-                caption = reply[8:].strip() or make_caption(p_title, p_desc, p_link, p_game)
-                print(f"  Caption override: {caption[:60]}...")
+        if not msg_id or msg_id not in replies:
+            new_pending.append(p)
+            continue
+        reply = replies[msg_id]
+        reply_lower = (reply or "").lower().strip()
+        if not reply or reply_lower in ("skip", "пропуск", "нет", "no"):
+            print(f"  Moderation skipped: {p.get('title', '?')[:40]}")
+            track_source_skip(learning, p.get("source", "unknown"))
+            if p.get("id"):
+                pending_ids.discard(p["id"])
+            continue
+        caption, learned_game = _build_caption(p, reply)
+        custom_cap = p.get("custom_caption")
+        if custom_cap and not reply_lower.startswith("caption:"):
+            comment = escape_html(reply[:200])
+            marker = "\n\nПодробнее:"
+            if marker in custom_cap:
+                custom_cap = custom_cap.replace(marker, f"\n\n<blockquote>{comment}</blockquote>{marker}", 1)
             else:
-                caption = make_caption(p_title, p_desc, p_link, p_game)
-                comment = escape_html(reply[:200])
-                marker = "\n\nПодробнее:"
-                if marker in caption:
-                    caption = caption.replace(marker, f"\n\n<blockquote>{comment}</blockquote>{marker}", 1)
-                else:
-                    caption = caption.replace(CHANNEL_SIGNATURE, f"\n\n<i>{comment}</i>{CHANNEL_SIGNATURE}", 1)
-                learned_game = extract_game(reply)
-                if learned_game and learned_game != p_game and len(learned_game) > 2:
-                    learn_game_override(learning, p_title, learned_game)
-                    print(f"  Learned game override: '{p_game}' -> '{learned_game}'")
-            custom_cap = p.get("custom_caption")
-            if custom_cap and not reply_lower.startswith("caption:"):
-                comment = escape_html(reply[:200])
-                marker = "\n\nПодробнее:"
-                if marker in custom_cap:
-                    custom_cap = custom_cap.replace(marker, f"\n\n<blockquote>{comment}</blockquote>{marker}", 1)
-                else:
-                    custom_cap = custom_cap.replace(CHANNEL_SIGNATURE, f"\n\n<i>{comment}</i>{CHANNEL_SIGNATURE}", 1)
-                print(f"  Admin comment embedded into custom caption")
-            elif not custom_cap:
-                custom_cap = caption
-            msg_id_posted = send_post(p_title, p_desc, p_link, p_img, p_youtube, p_game, caption=custom_cap)
-            if msg_id_posted:
-                track_source_post(learning, p.get("source", "unknown"))
-                posted_msgs = state.setdefault("posted_msgs", {})
-                posted_msgs[str(msg_id_posted)] = {"title": p_title, "game": p_game or "",
-                    "time": time.time(), "source": p.get("source", "moderation")}
-                ch = p.get("content_hash")
-                if ch:
-                    state.setdefault("content_hashes", {})[str(ch)] = time.time()
-                pid = p.get("id")
-                if pid:
-                    ids[pid] = {"time": time.time()}
-                    pending_ids.discard(pid)
-                posted += 1
-                ptype = p.get("_type", "")
-                if ptype == "rock":
-                    today = time.strftime("%Y-%m-%d")
-                    state["rock_posted"] = today
-                    rocks_links = state.setdefault("posted_rock_links", [])
-                    rlink = p.get("_link")
-                    if rlink and rlink not in rocks_links:
-                        rocks_links.append(rlink)
-                    artist = p.get("_artist", "")
-                    if artist:
-                        tmpdir = p.get("_tmpdir", "")
-                        if tmpdir:
-                            _AUDIO_EXECUTOR.submit(_post_rock_audio_worker, artist, tmpdir)
-                elif ptype == "anime":
-                    state["anime_posted"] = time.strftime("%Y-%m-%d")
-                    anime_links = state.setdefault("posted_anime_links", [])
-                    alink = p.get("_link") or p.get("link")
-                    if alink and alink not in anime_links:
-                        anime_links.append(alink)
-                elif p_game and any(w in p_game.lower() for w in WATCHED_GAMES):
-                    name = extract_game(p_title)
-                    if name and len(name) > 2:
-                        tmpdir = os.path.join(os.path.dirname(STATE_FILE), "audio_tmp")
-                        print(f"  OST download queued for: {name}")
-                        _AUDIO_EXECUTOR.submit(_post_ost_worker, name, p_title, tmpdir)
-                continue
-        new_pending.append(p)
+                custom_cap = custom_cap.replace(CHANNEL_SIGNATURE, f"\n\n<i>{comment}</i>{CHANNEL_SIGNATURE}", 1)
+            print(f"  Admin comment embedded into custom caption")
+        elif not custom_cap:
+            custom_cap = caption
+        msg_id_posted = send_post(
+            p.get("title",""), p.get("desc",""), p.get("link",""),
+            p.get("img_url"), p.get("youtube_url"), p.get("game"),
+            caption=custom_cap,
+        )
+        if msg_id_posted:
+            _track_posted_item(state, ids, p, msg_id_posted, learning)
+            if p.get("id"):
+                pending_ids.discard(p["id"])
+            if learned_game:
+                learn_game_override(learning, p.get("title",""), learned_game)
+                print(f"  Learned game override: '{p['game']}' -> '{learned_game}'")
+            posted += 1
     last_mod = state.get("last_moderation_sent", 0)
     if unseen and time.time() - last_mod >= MODERATION_INTERVAL:
-        unseen_filtered = [x for x in unseen if x["id"] not in pending_ids]
-        if not unseen_filtered:
-            state["pending_moderation"] = new_pending
-            return posted
-        last_themes = state.get("last_posted_themes", [])
-        unseen_filtered.sort(key=lambda x: (last_themes.count(x.get("_theme", "generic")), -x["_score"]))
-        sent = 0
-        posted_msgs = state.get("posted_msgs", {})
-        dedup_cutoff = time.time() - _SCORING["title_dedup_hours"] * 3600
-        posted_titles = [
-            v.get("title", "") for v in posted_msgs.values()
-            if v.get("time", 0) >= dedup_cutoff and v.get("title")
-        ]
-        threshold = _SCORING["title_dedup_threshold"]
-        for best in unseen_filtered:
-            title_new = best["title"]
-            words_new = set(title_new.lower().split())
-            dup = False
-            if len(words_new) >= TITLE_DEDUP_MIN_WORDS:
-                for old_title in posted_titles:
-                    words_old = set(old_title.lower().split())
-                    if len(words_old) < TITLE_DEDUP_MIN_WORDS:
-                        continue
-                    inter = len(words_new & words_old)
-                    union = len(words_new | words_old)
-                    if union > 0 and inter / union >= threshold:
-                        dup = True
-                        break
-            if dup:
-                continue
-            if _send_moderation_preview(best, new_pending, pending_ids):
-                sent += 1
-        if new_pending:
-            themes = [x.get("_theme", "generic") for x in unseen_filtered[:3]]
-            state["last_posted_themes"] = (state.get("last_posted_themes", []) + themes)[-3:]
-            state["last_moderation_sent"] = time.time()
-            print(f"  Sent {sent} items for moderation")
+        _send_new_previews(unseen, pending_ids, new_pending, state)
     state["pending_moderation"] = new_pending
     return posted
 

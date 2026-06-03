@@ -37,7 +37,7 @@ def log(*args, **kwargs):
 
 
 
-def escape_html(text):
+def escape_html(text: str) -> str:
     text = str(text)
     text = text.replace("&", "&amp;")
     text = text.replace("<", "&lt;")
@@ -45,7 +45,7 @@ def escape_html(text):
     return text
 
 
-def clean(text):
+def clean(text: str) -> str:
     text = unescape(text or "")
     text = re.sub(r"<[^>]+>", "", text)
     text = re.sub(r"\s+", " ", text).strip()
@@ -54,14 +54,14 @@ def clean(text):
     return text
 
 
-def clean_desc(text):
+def clean_desc(text: str) -> str:
     text = clean(text)
     for pat in BOILERPLATE:
         text = re.sub(pat, "", text, flags=re.I | re.M)
     return text.strip().strip(",").strip()
 
 
-def shorten(s, max_len=200):
+def shorten(s: str, max_len: int = 200) -> str:
     if not s:
         return ""
     if len(s) <= max_len:
@@ -110,7 +110,7 @@ def _translate_fallback(text):
         log(f"  google translate fallback err: {e}")
     return text
 
-def translate_en_ru(text):
+def translate_en_ru(text: str) -> str:
     if not text:
         return text
     try:
@@ -124,7 +124,7 @@ def translate_en_ru(text):
         return text
 
 
-def is_hot(item):
+def is_hot(item: dict) -> bool:
     text = (item["title"] + " " + item.get("desc", "")).lower()
     for kw in PRIORITY_KEYWORDS:
         if kw in text:
@@ -132,7 +132,7 @@ def is_hot(item):
     return False
 
 
-def is_trailer(title):
+def is_trailer(title: str) -> bool:
     t = title.lower()
     return any(kw in t for kw in TRAILER_KEYWORDS)
 
@@ -140,14 +140,14 @@ def is_trailer(title):
 YOUTUBE_RE = re.compile(YOUTUBE_RE_SRC)
 
 
-def extract_youtube(raw_html):
+def extract_youtube(raw_html: str) -> str | None:
     m = YOUTUBE_RE.search(raw_html or "")
     if m:
         return f"https://www.youtube.com/watch?v={m.group(1)}"
     return None
 
 
-def is_gaming_related(title, desc):
+def is_gaming_related(title: str, desc: str) -> bool:
     t = title.lower()
     for w in NON_GAMING_TITLE_WORDS:
         if w in t:
@@ -159,7 +159,7 @@ def is_gaming_related(title, desc):
     return True
 
 
-def get_recent_game_names(posted_msgs, hours=GAME_DEDUP_HOURS):
+def get_recent_game_names(posted_msgs: dict, hours: int = GAME_DEDUP_HOURS) -> set:
     cutoff = time.time() - hours * 3600
     names = set()
     for mid, data in posted_msgs.items():
@@ -167,6 +167,7 @@ def get_recent_game_names(posted_msgs, hours=GAME_DEDUP_HOURS):
         if t >= cutoff and data.get("game"):
             names.add(data["game"].lower())
     return names
+
 
 def title_similarity(a, b):
     words_a = set(a.lower().split())
@@ -684,6 +685,7 @@ def smart_comment(theme, game, title):
             f"Продажи {kw} бьют рекорды!", f"Народ раскупает {kw}", f"{kw} — успех!",
             f"Ого, {kw} продаётся отлично!", f"{kw} — кассовый успех.",
             f"А вы уже купили {kw} или ждёте скидку?",
+            f"Коммерческий успех налицо.", f"Расходится как горячие пирожки.",
         ],
         "delay": [
             f"Релиз {kw} отложили. Ну такое.", f"{kw} задерживается. Снова.",
@@ -721,7 +723,7 @@ def smart_comment(theme, game, title):
             f"На заметку.", f"Понеслась душа в рай.", f"Ну, погнали!",
             f"Игровая индустрия не спит.", f"Интересный поворот.",
             f"А вы что думаете?", f"Тренд или случайность?", f"Ждём-с.",
-            f"В мире игр ничего не меняется.",
+            f"В мире игр ничего не меняется.", f"Без комментариев.",
         ],
     }
     return random.choice(ctx.get(theme, ctx["generic"]))
@@ -765,73 +767,35 @@ def embed_link(text, link):
     return f"{text}\n\nПодробнее: {link}"
 
 
-def template_sales(title, desc, game, numbers, platforms, genre, link):
+_BODIES = {
+    "sales":    lambda s, title, game, numbers, platforms: f"Продажи достигли отметки в {numbers[0] if numbers else 'внушительное количество'} копий. {s}",
+    "delay":    lambda s, title, game, numbers, platforms: f"Релиз перенесён. {s}",
+    "sequel":   lambda s, title, game, numbers, platforms: f"Продолжение истории. {s}",
+    "console":  lambda s, title, game, numbers, platforms: f"{title}. {s}" if s else title,
+    "drama":    lambda s, title, game, numbers, platforms: f"Скандал разгорается. {s}",
+    "generic":  lambda s, title, game, numbers, platforms: f"{title}. {s}" if s else title,
+    "rumor":    lambda s, title, game, numbers, platforms: f"Слухи ходят разные. {s}",
+    "announce": lambda s, title, game, numbers, platforms: f"Официально подтверждено. {s}",
+}
+
+
+def _build_template(theme, title, desc, game, numbers, platforms, genre, link):
     s = shorten(desc, MAX_DESC_LEN)
-    n = numbers[0] if numbers else "внушительное количество"
-    commentary = smart_comment("sales", game, title)
-    body = f"Продажи {game} достигли отметки в {n} копий. {s}"
-    return [commentary, _SEP * 7, embed_link(body, link)]
-
-
-def template_delay(title, desc, game, numbers, platforms, genre, link):
-    s = shorten(desc, MAX_DESC_LEN)
-    commentary = smart_comment("delay", game, title)
-    body = f"Релиз {game} перенесён. {s}"
-    return [commentary, _SEP * 7, embed_link(body, link)]
-
-
-def template_sequel(title, desc, game, numbers, platforms, genre, link):
-    s = shorten(desc, MAX_DESC_LEN)
-    commentary = smart_comment("sequel", game, title)
-    body = f"{game} — продолжение истории. {s}"
-    return [commentary, _SEP * 7, embed_link(body, link)]
-
-
-def template_console(title, desc, game, numbers, platforms, genre, link):
-    s = shorten(desc, MAX_DESC_LEN)
-    commentary = smart_comment("console", game, title)
-    platform_str = f" на {'/'.join(platforms[:3])}" if platforms else ""
-    body = f"{game}{platform_str}. {s}" if game else f"{title}. {s}"
-    return [commentary, _SEP * 7, embed_link(body, link)]
-
-
-def template_drama(title, desc, game, numbers, platforms, genre, link):
-    s = shorten(desc, MAX_DESC_LEN)
-    commentary = smart_comment("drama", game, title)
-    body = f"Скандал вокруг {game}. {s}"
-    return [commentary, _SEP * 7, embed_link(body, link)]
-
-
-def template_generic(title, desc, game, numbers, platforms, genre, link):
-    s = shorten(desc, MAX_DESC_LEN)
-    commentary = smart_comment("generic", game, title)
-    body = f"{title}. {s}" if s else title
-    return [commentary, _SEP * 7, embed_link(body, link)]
-
-
-def template_rumor(title, desc, game, numbers, platforms, genre, link):
-    s = shorten(desc, MAX_DESC_LEN)
-    commentary = smart_comment("rumor", game, title)
-    body = f"Говорят, что {game}. {s}"
-    return [commentary, _SEP * 7, embed_link(body, link)]
-
-
-def template_announce(title, desc, game, numbers, platforms, genre, link):
-    s = shorten(desc, MAX_DESC_LEN)
-    commentary = smart_comment("announce", game, title)
-    body = f"Анонс! {game}. {s}"
+    commentary = smart_comment(theme, game, title)
+    builder = _BODIES.get(theme, _BODIES["generic"])
+    body = builder(s, title, game, numbers, platforms)
     return [commentary, _SEP * 7, embed_link(body, link)]
 
 
 TEMPLATES = {
-    "sales": template_sales,
-    "delay": template_delay,
-    "sequel": template_sequel,
-    "console": template_console,
-    "drama": template_drama,
-    "rumor": template_rumor,
-    "announce": template_announce,
-    "generic": template_generic,
+    "sales":    lambda t, d, g, n, p, ge, l: _build_template("sales",    t, d, g, n, p, ge, l),
+    "delay":    lambda t, d, g, n, p, ge, l: _build_template("delay",    t, d, g, n, p, ge, l),
+    "sequel":   lambda t, d, g, n, p, ge, l: _build_template("sequel",   t, d, g, n, p, ge, l),
+    "console":  lambda t, d, g, n, p, ge, l: _build_template("console",  t, d, g, n, p, ge, l),
+    "drama":    lambda t, d, g, n, p, ge, l: _build_template("drama",    t, d, g, n, p, ge, l),
+    "rumor":    lambda t, d, g, n, p, ge, l: _build_template("rumor",    t, d, g, n, p, ge, l),
+    "announce": lambda t, d, g, n, p, ge, l: _build_template("announce", t, d, g, n, p, ge, l),
+    "generic":  lambda t, d, g, n, p, ge, l: _build_template("generic",  t, d, g, n, p, ge, l),
 }
 
 

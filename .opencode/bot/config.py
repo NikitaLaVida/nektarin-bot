@@ -44,7 +44,7 @@ def validate_config():
         print("  Config warning: ROCK_ARTISTS is empty")
     if not WATCHED_GAMES:
         print("  Config warning: WATCHED_GAMES is empty")
-MAX_POSTS = 2
+MAX_POSTS = 10
 _SCORING = {
     "hot_boost": 50, "trailer_boost": 10, "youtube_boost": 5,
     "desc_score_per_char": 0.2, "desc_max_score": 20,
@@ -547,4 +547,8 @@ ANIME_COMMENTARIES = [
     "Отаку, ваш выход.", "На заметку аниме-фанату.",
     "Только для истинных ценителей.", "Аниме-индустрия не спит.",
     "Берём на карандаш.", "Ждём озвучку.",
+]
+
+UPCOMING_RELEASES = [
+    {"name": "Пример: Gothic 1 Remake", "date": "2026-06-15", "platform": "PC", "url": "https://store.steampowered.com/app/999999"},
 ]

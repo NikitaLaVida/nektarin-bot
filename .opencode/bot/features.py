@@ -28,7 +28,7 @@ from bot.images import rss_image, find_post_image
 from bot.learning import apply_game_override, source_score_mod
 
 
-def _is_english(text):
+def _is_english(text: str) -> bool:
     if not text:
         return False
     letters = [c for c in text if c.isalpha()]
@@ -41,7 +41,7 @@ def _is_english(text):
     return latin / len(letters) > 0.5
 
 
-def make_caption(title, desc, link, game=None):
+def make_caption(title: str, desc: str, link: str, game: str = None) -> str:
     raw_title = title
     raw_desc = desc
     if not desc:
@@ -85,7 +85,7 @@ def _log_post_history(title, game, source, msg_id):
         print(f"  Post history log err: {e}")
 
 
-def send_post(title, desc, link, img_url, youtube_url=None, game=None, custom_caption=None):
+def send_post(title: str, desc: str, link: str, img_url: str | None, youtube_url: str = None, game: str = None, custom_caption: str = None) -> int | None:
     caption = custom_caption or make_caption(title, desc, link, game)
     caption_with_link = f"{caption}\n\n{youtube_url}" if youtube_url else caption
     if img_url:
@@ -119,48 +119,49 @@ def send_post(title, desc, link, img_url, youtube_url=None, game=None, custom_ca
     return None
 
 
-def score_news_item(item, ids, content_hashes, recent_games, learning=None):
+def score_news_item(item: dict, ids: dict, content_hashes: dict, recent_games: set, learning: dict = None) -> dict | None:
     if item.get("id") in ids:
         return None
     if str(item.get("content_hash", "")) in content_hashes:
         return None
+    result = dict(item)
     score = 0
-    desc_len = len(item.get("desc", ""))
+    desc_len = len(result.get("desc", ""))
     score += min(desc_len * _SCORING["desc_score_per_char"], _SCORING["desc_max_score"])
-    if extract_numbers(item.get("desc", "")):
+    if extract_numbers(result.get("desc", "")):
         score += _SCORING["numbers_boost"]
-    if extract_platforms(item["title"] + " " + item.get("desc", "")):
+    if extract_platforms(result["title"] + " " + result.get("desc", "")):
         score += _SCORING["platforms_boost"]
-    game = extract_game(item["title"])
+    game = extract_game(result["title"])
     if learning:
-        override = apply_game_override(learning, item["title"])
+        override = apply_game_override(learning, result["title"])
         if override:
             game = override
-            item["_override"] = True
+            result["_override"] = True
     game_lower = game.lower()
-    if not is_gaming_related(item["title"], item.get("desc", "")):
+    if not is_gaming_related(result["title"], result.get("desc", "")):
         score += _SCORING["non_gaming_penalty"]
     elif game and len(game_lower) > 3:
         score += _SCORING["game_found_boost"]
     if game_lower and len(game_lower) > 3 and game_lower in recent_games:
-        hot = any(kw in (item["title"] + " " + item.get("desc", "")).lower() for kw in PRIORITY_KEYWORDS)
+        hot = any(kw in (result["title"] + " " + result.get("desc", "")).lower() for kw in PRIORITY_KEYWORDS)
         score += _SCORING["repeat_hot_penalty"] if hot else _SCORING["repeat_penalty"]
     if learning:
-        source = item.get("source", "")
+        source = result.get("source", "")
         score += source_score_mod(learning, source)
-    theme = detect_theme(item["title"], item.get("desc", ""))
-    if is_hot(item):
+    theme = detect_theme(result["title"], result.get("desc", ""))
+    if is_hot(result):
         score += _SCORING["hot_boost"]
-    if is_trailer(item["title"]):
+    if is_trailer(result["title"]):
         score += _SCORING["trailer_boost"]
-    if item.get("youtube_url"):
+    if result.get("youtube_url"):
         score += _SCORING["youtube_boost"]
     if theme == "rumor":
         score += _SCORING["rumor_penalty"]
-    item["_score"] = score
-    item["_game"] = game
-    item["_theme"] = theme
-    return item
+    result["_score"] = score
+    result["_game"] = game
+    result["_theme"] = theme
+    return result
 
 
 def fetch_news():

@@ -34,6 +34,7 @@ from bot.stats import (
     make_channel_stats, send_daily_admin_stats,
     post_listener_chart, post_weekly_poll, post_weekly_comments,
 )
+from bot.releases import post_release_calendar
 from bot.learning import init_learning
 from bot.moderation import (
     _process_moderation, force_moderation,
@@ -147,6 +148,11 @@ def _run_weekly_tasks(state, now_wday, now_h):
     if now_wday != 6 or now_h != 12:
         return 0
     posted = 0
+    try:
+        if post_release_calendar():
+            posted += 1
+    except Exception as e:
+        print(f"  Release calendar err: {e}")
     stats = make_channel_stats(state)
     if stats:
         try:

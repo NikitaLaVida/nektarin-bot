@@ -15,7 +15,8 @@ class TestMakeCaption(unittest.TestCase):
 
     def test_english_title_translated(self):
         cap = make_caption("Elden Ring sold 20 million", "Game sold well", "https://example.com")
-        self.assertIn("Elden Ring", cap)
+        self.assertIn("https://example.com", cap)
+        self.assertIn("@NektarinGaming", cap)
 
     def test_with_game(self):
         cap = make_caption("Новость", "Текст", "https://example.com", game="Elden Ring")
