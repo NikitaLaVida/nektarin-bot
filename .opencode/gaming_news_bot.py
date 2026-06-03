@@ -29,7 +29,7 @@ from bot.images import find_post_image
 from bot.features import (
     send_post, fetch_news, score_news_item,
     fetch_steam_deals, fetch_epic_free_games, fetch_gog_free_games,
-    send_deals_batch,
+    send_deals_batch, make_caption,
 )
 from bot.learning import init_learning, track_source_post, track_source_skip, learn_game_override
 
