@@ -24,6 +24,7 @@ from bot.security import (
     _disk_space_check, safe_download_image, detect_image_type,
 )
 from bot.core import is_hd
+from bot.images import find_post_image
 from bot.features import (
     send_post, fetch_news, score_news_item,
     fetch_steam_deals, fetch_epic_free_games, fetch_gog_free_games,
@@ -298,39 +299,21 @@ def _process_moderation(state, ids, unseen):
     last_mod = state.get("last_moderation_sent", 0)
     if unseen and time.time() - last_mod >= MODERATION_INTERVAL:
         unseen_filtered = [x for x in unseen if x["id"] not in pending_ids]
-        # Source balancing: max 2 items per source per moderation round
-        source_count = {}
-        for p in new_pending:
-            src = p.get("source", "")
-            source_count[src] = source_count.get(src, 0) + 1
-        balanced = []
-        for x in unseen_filtered:
-            src = x.get("source", "")
-            if source_count.get(src, 0) >= 2:
-                continue
-            balanced.append(x)
-            source_count[src] = source_count.get(src, 0) + 1
-        # Theme diversity: prefer items with themes not seen recently
+        if not unseen_filtered:
+            state["pending_moderation"] = new_pending
+            return posted
+        # Sort: diverse themes first, then by score
         last_themes = state.get("last_posted_themes", [])
-        balanced.sort(key=lambda x: (last_themes.count(x.get("_theme", "generic")), -x["_score"]))
-        picked = []
-        for best in balanced:
-            if len(picked) >= 3:
-                break
-            theme = best.get("_theme", "generic")
-            if not picked or theme not in {x.get("_theme", "") for x in picked}:
-                picked.append(best)
-        if len(picked) < 3:
-            for best in balanced:
-                if best not in picked and len(picked) < 3:
-                    picked.append(best)
-        for best in picked:
+        unseen_filtered.sort(key=lambda x: (last_themes.count(x.get("_theme", "generic")), -x["_score"]))
+        sent = 0
+        for best in unseen_filtered:
             if _send_moderation_preview(best, new_pending, pending_ids):
-                pass
+                sent += 1
         if new_pending:
-            state["last_posted_themes"] = (state.get("last_posted_themes", []) +
-                [x.get("_theme", "generic") for x in picked])[-3:]
+            themes = [x.get("_theme", "generic") for x in unseen_filtered[:3]]
+            state["last_posted_themes"] = (state.get("last_posted_themes", []) + themes)[-3:]
             state["last_moderation_sent"] = time.time()
+            print(f"  Sent {sent} items for moderation")
     state["pending_moderation"] = new_pending
     return posted
 
@@ -455,8 +438,6 @@ def main():
     save_state(state)
 
     unseen = _fetch_and_score(state, ids)
-    posted += _post_watched_auto(state, ids, unseen)
-    unseen = [x for x in unseen if x["id"] not in ids]
     posted += _process_moderation(state, ids, unseen)
 
     posted += _run_weekly_tasks(state, now_wday, now_h)
