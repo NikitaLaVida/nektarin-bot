@@ -17,8 +17,8 @@ from bot.security import safe_download_image, _disk_space_check
 from bot.images import find_post_image
 from bot.features import (
     send_post, fetch_news, score_news_item, make_caption,
-    game_ost_tracks, _send_rock_audio,
 )
+from bot.rock import game_ost_tracks, _send_rock_audio
 from bot.learning import (
     init_learning, track_source_post, track_source_skip, learn_game_override,
 )

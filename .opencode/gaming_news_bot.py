@@ -23,9 +23,14 @@ from bot.security import (
 )
 from bot.features import (
     fetch_news, score_news_item,
+)
+from bot.deals import (
     fetch_steam_deals, fetch_epic_free_games, fetch_gog_free_games,
     send_deals_batch,
-    post_anime_news, post_rock_news,
+)
+from bot.anime import post_anime_news
+from bot.rock import post_rock_news
+from bot.stats import (
     make_channel_stats, send_daily_admin_stats,
     post_listener_chart, post_weekly_poll, post_weekly_comments,
 )
