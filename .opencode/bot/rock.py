@@ -7,9 +7,8 @@ import requests
 import feedparser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from bot.config import (
-    ADMIN_CHAT_ID, STATE_FILE,
-    CHANNEL_SIGNATURE, ROCK_FEEDS, ROCK_ARTISTS,
-    ROCK_TRACKS, MAX_DESC_LEN,
+    ADMIN_CHAT_ID, STATE_FILE, CHANNEL_SIGNATURE, ROCK_FEEDS, ROCK_ARTISTS,
+    ROCK_TRACKS, MAX_DESC_LEN, COOKIES_FILE,
 )
 from bot.core import (
     tg, escape_html, clean, clean_desc, shorten,
@@ -50,6 +49,29 @@ def album_cover_url(artist, album_name):
     return None
 
 
+SAFE_AUDIO_EXTS = {".m4a", ".mp3", ".webm", ".opus", ".ogg", ".wav", ".mp4", ".aac", ".flac"}
+
+
+def _safe_audio_path(fn):
+    try:
+        real = os.path.realpath(fn)
+        if not os.path.exists(real):
+            print(f"  Audio file gone: {fn}")
+            return None
+        ext = os.path.splitext(real)[1].lower()
+        if ext not in SAFE_AUDIO_EXTS:
+            print(f"  Blocked unsafe extension ({ext}): {fn}")
+            try:
+                os.remove(real)
+            except Exception:
+                pass
+            return None
+    except Exception as e:
+        print(f"  Path check err: {e}")
+        return None
+    return fn
+
+
 def download_audio(query, output_dir, max_results=1):
     try:
         import yt_dlp
@@ -61,9 +83,8 @@ def download_audio(query, output_dir, max_results=1):
             "max_filesize": 45000000,
             "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
         }
-        cookies_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cookies.txt")
-        if os.path.exists(cookies_path):
-            opts["cookiefile"] = cookies_path
+        if os.path.exists(COOKIES_FILE):
+            opts["cookiefile"] = COOKIES_FILE
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(f"ytsearch{max_results}:{query}", download=True)
             entries = info.get("entries", [info])
@@ -75,9 +96,11 @@ def download_audio(query, output_dir, max_results=1):
                     continue
                 pattern = os.path.join(output_dir, f"{video_id}.*")
                 matches = glob.glob(pattern)
-                if matches:
-                    fn = matches[0]
-                    results.append((fn, title))
+                for fn in matches:
+                    safe = _safe_audio_path(fn)
+                    if safe:
+                        results.append((safe, title))
+                    break
             if results:
                 return results
     except Exception as e:
@@ -187,17 +210,6 @@ def _send_rock_audio(artist, tmpdir):
                 print(f"  Audio error for {tname}: {e}")
     if sent_count == 0:
         print(f"  All audio downloads failed for {artist}")
-
-
-def _update_rock_state(state, msg_id, title, artist, link, source, today, rocks_links):
-    state["rock_posted"] = today
-    if link not in rocks_links:
-        rocks_links.append(link)
-    posted_msgs = state.setdefault("posted_msgs", {})
-    posted_msgs[str(msg_id)] = {
-        "title": title, "game": artist,
-        "time": time.time(), "source": source,
-    }
 
 
 def post_rock_news(state):

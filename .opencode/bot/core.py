@@ -77,11 +77,28 @@ def shorten(s: str, max_len: int = 200) -> str:
     return s[:max_len].rstrip()
 
 
-_TRANSLATOR = GoogleTranslator(source='en', target='ru')
+def _get_translator():
+    try:
+        from deep_translator import GoogleTranslator
+        return GoogleTranslator(source='en', target='ru')
+    except Exception as e:
+        log(f"  Translator init err: {e}")
+        return None
+
+
+_TRANSLATOR = None
 
 @lru_cache(maxsize=1000)
 def _do_translate(text):
-    return _TRANSLATOR.translate(text)
+    global _TRANSLATOR
+    if _TRANSLATOR is None:
+        _TRANSLATOR = _get_translator()
+    if _TRANSLATOR:
+        try:
+            return _TRANSLATOR.translate(text)
+        except Exception as e:
+            log(f"  Translate err: {e}")
+    return _translate_fallback(text)
 
 def _translate_fallback(text):
     try:
@@ -179,11 +196,11 @@ def title_similarity(a, b):
     return len(intersection) / len(union) if union else 0
 
 
-_STATE_MIGRATIONS = []
+_STATE_MIGRATIONS = {}
 
 def _register_migration(version):
     def wrapper(fn):
-        _STATE_MIGRATIONS.insert(version, fn)
+        _STATE_MIGRATIONS[version] = fn
         return fn
     return wrapper
 
@@ -200,21 +217,28 @@ def _migrate_v1_ids(state):
 def migrate_state(state):
     version = state.get("_state_version", 0)
     changed = False
-    for version in range(version, len(_STATE_MIGRATIONS)):
-        fn = _STATE_MIGRATIONS[version]
+    keys = sorted(_STATE_MIGRATIONS)
+    for v in keys:
+        if v < version:
+            continue
+        fn = _STATE_MIGRATIONS[v]
         try:
             if fn(state):
                 changed = True
-                log(f"  Migration v{version} applied")
+                log(f"  Migration v{v} applied")
         except Exception as e:
-            log(f"  Migration v{version} failed: {e}")
-        state["_state_version"] = version + 1
+            log(f"  Migration v{v} failed: {e}")
+        state["_state_version"] = v + 1
     return changed
 
 
 def load_state():
     if os.path.exists(STATE_FILE):
         try:
+            size = os.path.getsize(STATE_FILE)
+            if size > 50 * 1024 * 1024:
+                log(f"  State file too large ({size // 1024 // 1024}MB), refusing load")
+                return {"ids": {}}
             with open(STATE_FILE, "r", encoding="utf-8") as f:
                 state = json.load(f)
             if migrate_state(state):
@@ -245,6 +269,8 @@ def save_state(state):
     tmp = STATE_FILE + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(content)
+        f.flush()
+        os.fsync(f.fileno())
     os.replace(tmp, STATE_FILE)
     _LAST_SAVED_STATE = content
 
@@ -343,7 +369,7 @@ def process_updates(state, pending_by_msg_id):
                 replies[reply_to] = text or None
                 state["moderation_offset"] = upd_id + 1
                 continue
-        if linked_group and chat_id == linked_group and text and from_id != bot_id:
+        if linked_group and chat_id == linked_group and text and bot_id and from_id != bot_id:
             text_lower = text.lower()
             track_pats = [r" — ", r" – ", r" - ", r"–", r"—", r"youtube\.com", r"youtu\.be"]
             is_track = any(re.search(p, text) for p in track_pats) or \
@@ -805,7 +831,7 @@ def send_audio_file(path, title, performer=None, chat_id=None):
         return None
     ext = os.path.splitext(path)[1] or ".webm"
     mime_map = {
-        ".mp3": "audio/mpeg", ".m4a": "audio/mp4",
+        ".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".mp4": "audio/mp4",
         ".webm": "audio/webm", ".opus": "audio/opus",
         ".ogg": "audio/ogg", ".wav": "audio/wav",
     }

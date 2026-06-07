@@ -4,7 +4,6 @@ from datetime import datetime, timezone
 import requests
 from bot.config import CHANNEL_ID, CHANNEL_SIGNATURE
 from bot.core import tg, escape_html, clean
-from bot.features import _log_post_history
 
 
 def fetch_epic_free_games():

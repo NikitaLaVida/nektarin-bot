@@ -175,18 +175,35 @@ def fetch_news():
         if src_err.get("count", 0) > 3 and time.time() - src_err.get("time", 0) < 3600:
             print(f"  {source}: skipped (circuit breaker, {src_err['count']} errors)")
             return []
+        if src_err.get("count", 0) > 10 and time.time() - src_err.get("time", 0) < 86400:
+            print(f"  {source}: hard blocked (10+ errors in 24h)")
+            return []
         entries = []
         for attempt in range(2):
             try:
-                resp = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
-                feed = feedparser.parse(resp.content)
+                resp = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"}, stream=True)
+                max_bytes = 2 * 1024 * 1024
+                raw = b""
+                for chunk in resp.iter_content(chunk_size=65536):
+                    raw += chunk
+                    if len(raw) > max_bytes:
+                        print(f"  {source}: feed too large ({len(raw)} bytes), truncating")
+                        break
+                feed = feedparser.parse(raw)
                 seen = set()
                 for entry in feed.entries[:limit]:
                     raw_desc = entry.get("description", "") or ""
-                    title = clean(entry.get("title", ""))
+                    raw_title = entry.get("title", "") or ""
+                    if len(raw_title) > 2000:
+                        print(f"  {source}: oversized title ({len(raw_title)} chars), truncating")
+                        raw_title = raw_title[:2000]
+                    if len(raw_desc) > 50000:
+                        print(f"  {source}: oversized desc ({len(raw_desc)} chars), truncating")
+                        raw_desc = raw_desc[:50000]
+                    title = clean(raw_title)
                     desc = clean_desc(raw_desc)
                     link = entry.get("link", "")
-                    norm = re.sub(r"[^a-zа-яё0-9]", "", (title + desc[:100]).lower())
+                    norm = re.sub(r"[^a-zа-яё0-9 ]", "", (title + desc[:100]).lower())
                     h = hashlib.md5(norm.encode()).hexdigest()
                     if h in seen:
                         continue

@@ -97,23 +97,52 @@ def is_safe_url(url):
     return safe
 
 
-def safe_download_image(url, timeout=10, max_size=MAX_IMAGE_SIZE):
+def safe_download_image(url, timeout=10, max_size=MAX_IMAGE_SIZE, max_pixels=5000000, max_redirects=5):
     if not is_safe_url(url):
         return None
     try:
-        resp = requests.get(url, stream=True, timeout=timeout, headers={"User-Agent": "Mozilla/5.0"})
-        if resp.status_code != 200:
-            return None
-        size = 0
-        chunks = []
-        for chunk in resp.iter_content(chunk_size=65536):
-            chunks.append(chunk)
-            size += len(chunk)
-            if size > max_size:
-                print(f"  Image too large ({size} bytes), skipping")
-                return None
-        content = b"".join(chunks)
-        return content
+        with requests.Session() as session:
+            session.max_redirects = 0
+            redirects_left = max_redirects
+            current_url = url
+            while redirects_left > 0:
+                resp = session.get(current_url, stream=True, timeout=timeout,
+                                   headers={"User-Agent": "Mozilla/5.0"},
+                                   allow_redirects=False)
+                if resp.status_code in (301, 302, 303, 307, 308):
+                    next_url = resp.headers.get("Location")
+                    if not next_url:
+                        return None
+                    import urllib.parse
+                    next_url = urllib.parse.urljoin(current_url, next_url)
+                    if not is_safe_url(next_url):
+                        print(f"  Blocked unsafe redirect: {next_url}")
+                        return None
+                    current_url = next_url
+                    redirects_left -= 1
+                    continue
+                if resp.status_code != 200:
+                    return None
+                size = 0
+                chunks = []
+                for chunk in resp.iter_content(chunk_size=65536):
+                    chunks.append(chunk)
+                    size += len(chunk)
+                    if size > max_size:
+                        print(f"  Image too large ({size} bytes), skipping")
+                        return None
+                content = b"".join(chunks)
+                if max_pixels:
+                    try:
+                        from PIL import Image
+                        import io
+                        img = Image.open(io.BytesIO(content))
+                        if img.width * img.height > max_pixels:
+                            print(f"  Image too large ({img.width}x{img.height} = {img.width*img.height}px), skipping")
+                            return None
+                    except Exception:
+                        pass
+                return content
     except Exception as e:
         print(f"  Image download err: {e}")
         return None

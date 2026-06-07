@@ -10,3 +10,5 @@ test_*.py
 session_log.md
 opencode.json
 .venv
+bot_config.json
+cookies.txt

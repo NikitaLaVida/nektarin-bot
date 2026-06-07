@@ -44,7 +44,8 @@ def validate_config():
         print("  Config warning: ROCK_ARTISTS is empty")
     if not WATCHED_GAMES:
         print("  Config warning: WATCHED_GAMES is empty")
-MAX_POSTS = 10
+MAX_POSTS = 5
+MAX_POSTS_PER_HOUR = 5
 _SCORING = {
     "hot_boost": 50, "trailer_boost": 10, "youtube_boost": 5,
     "desc_score_per_char": 0.2, "desc_max_score": 20,

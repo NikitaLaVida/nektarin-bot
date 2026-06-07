@@ -7,7 +7,7 @@ from bot.config import (
     STATE_FILE, CHANNEL_ID, CHANNEL_SIGNATURE,
     ADMIN_CHAT_ID, WATCHED_GAMES, _SCORING,
     TITLE_DEDUP_MIN_WORDS, MODERATION_TTL, MODERATION_INTERVAL,
-    MAX_POSTS,
+    MAX_POSTS, MAX_POSTS_PER_HOUR,
 )
 from bot.core import (
     tg, escape_html, extract_game, save_state,
@@ -20,6 +20,7 @@ from bot.features import (
     send_post, fetch_news, score_news_item, make_caption,
 )
 from bot.rock import game_ost_tracks, _send_rock_audio
+from bot.llm import rewrite_news
 from bot.learning import (
     init_learning, track_source_post, track_source_skip, learn_game_override,
 )
@@ -29,9 +30,10 @@ _AUDIO_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="audio")
 atexit.register(lambda: _AUDIO_EXECUTOR.shutdown(wait=False))
 
 
-def _send_moderation_preview(item, pending, pending_ids):
+def _send_moderation_preview(item, pending, pending_ids, state=None):
     img = find_post_image(item)
-    preview = f"\U0001F514 <b>Пре-модерация</b>\n\n{make_caption(item['title'], item.get('desc',''), item['link'], item['_game'])}"
+    llm_desc = rewrite_news(item["title"], item.get("desc",""), item.get("content_hash",""), state)
+    preview = f"\U0001F514 <b>Пре-модерация</b>\n\n{make_caption(item['title'], llm_desc or item.get('desc',''), item['link'], item['_game'])}"
     img_bytes = None
     if img:
         try:
@@ -47,7 +49,7 @@ def _send_moderation_preview(item, pending, pending_ids):
             "img_url": img, "youtube_url": item.get("youtube_url"), "game": item["_game"],
             "source": item.get("source",""), "content_hash": item.get("content_hash",""),
             "msg_id": mod_msg_id, "time": time.time(),
-            "id": item["id"],
+            "id": item["id"], "_llm_desc": llm_desc,
         })
         pending_ids.add(item["id"])
     return mod_msg_id is not None
@@ -55,12 +57,13 @@ def _send_moderation_preview(item, pending, pending_ids):
 
 def _build_caption(p, reply):
     p_title, p_desc, p_link, p_game = p.get("title",""), p.get("desc",""), p.get("link",""), p.get("game")
+    p_llm = p.get("_llm_desc")
     reply_lower = (reply or "").lower().strip()
     if reply_lower.startswith("caption:"):
-        caption = reply[8:].strip() or make_caption(p_title, p_desc, p_link, p_game)
+        caption = reply[8:].strip() or make_caption(p_title, p_llm or p_desc, p_link, p_game)
         print(f"  Caption override: {caption[:60]}...")
         return caption, None
-    caption = make_caption(p_title, p_desc, p_link, p_game)
+    caption = make_caption(p_title, p_llm or p_desc, p_link, p_game)
     comment = escape_html(reply[:200])
     marker = "\n\nПодробнее:"
     if marker in caption:
@@ -145,7 +148,7 @@ def _send_new_previews(unseen, pending_ids, new_pending, state):
     for idx, best in enumerate(unseen_filtered):
         if _is_title_dup(best["title"], posted_titles, threshold, min_words):
             continue
-        if _send_moderation_preview(best, new_pending, pending_ids):
+        if _send_moderation_preview(best, new_pending, pending_ids, state):
             sent += 1
             if sent >= MAX_POSTS:
                 remaining = len(unseen_filtered) - idx - 1
@@ -157,6 +160,24 @@ def _send_new_previews(unseen, pending_ids, new_pending, state):
         state["last_moderation_sent"] = time.time()
         print(f"  Sent {sent} items for moderation")
     return sent
+
+
+def _check_hourly_limit(state):
+    hourly = state.setdefault("_hourly_posted", {})
+    hour_key = time.strftime("%Y-%m-%d %H:00")
+    count = hourly.get(hour_key, 0)
+    if count >= MAX_POSTS_PER_HOUR:
+        print(f"  Hourly limit reached ({count}/{MAX_POSTS_PER_HOUR}), deferring")
+        return False
+    return True
+
+
+def _inc_hourly_limit(state):
+    hourly = state.setdefault("_hourly_posted", {})
+    hour_key = time.strftime("%Y-%m-%d %H:00")
+    hourly[hour_key] = hourly.get(hour_key, 0) + 1
+    cutoff = time.time() - 86400
+    state["_hourly_posted"] = {k: v for k, v in hourly.items() if k >= time.strftime("%Y-%m-%d %H:00", time.localtime(cutoff))}
 
 
 def _process_moderation(state, ids, unseen):
@@ -172,6 +193,9 @@ def _process_moderation(state, ids, unseen):
     replies = process_updates(state, pending_by_msg_id)
     new_pending = []
     for p in active:
+        if not _check_hourly_limit(state):
+            new_pending.append(p)
+            continue
         msg_id = p.get("msg_id")
         if not msg_id or msg_id not in replies:
             new_pending.append(p)
@@ -186,7 +210,9 @@ def _process_moderation(state, ids, unseen):
             continue
         caption, learned_game = _build_caption(p, reply)
         custom_cap = p.get("custom_caption")
-        if custom_cap and not reply_lower.startswith("caption:"):
+        if reply_lower.startswith("caption:"):
+            custom_cap = caption
+        elif custom_cap:
             comment = escape_html(reply[:200])
             marker = "\n\nПодробнее:"
             if marker in custom_cap:
@@ -194,7 +220,7 @@ def _process_moderation(state, ids, unseen):
             else:
                 custom_cap = custom_cap.replace(CHANNEL_SIGNATURE, f"\n\n<i>{comment}</i>{CHANNEL_SIGNATURE}", 1)
             print(f"  Admin comment embedded into custom caption")
-        elif not custom_cap:
+        else:
             custom_cap = caption
         msg_id_posted = send_post(
             p.get("title",""), p.get("desc",""), p.get("link",""),
@@ -202,6 +228,7 @@ def _process_moderation(state, ids, unseen):
             custom_caption=custom_cap,
         )
         if msg_id_posted:
+            _inc_hourly_limit(state)
             _track_posted_item(state, ids, p, msg_id_posted, learning)
             if p.get("id"):
                 pending_ids.discard(p["id"])
@@ -213,39 +240,6 @@ def _process_moderation(state, ids, unseen):
     if unseen and time.time() - last_mod >= MODERATION_INTERVAL:
         _send_new_previews(unseen, pending_ids, new_pending, state)
     state["pending_moderation"] = new_pending
-    return posted
-
-
-def _post_watched_auto(state, ids, unseen):
-    posted = 0
-    last_themes = state.get("last_posted_themes", [])
-    for item in unseen:
-        if any(w in item.get("_game", "").lower() for w in WATCHED_GAMES) and item["_score"] > _SCORING["min_watched_auto_score"]:
-            theme = item.get("_theme", "generic")
-            if theme in last_themes:
-                print(f"  WATCHED_GAMES skip (theme {theme} recently posted): {item['title'][:40]}")
-                continue
-            print(f"  WATCHED_GAMES auto-post: {item['title'][:50]}")
-            img = find_post_image(item)
-            msg_id = send_post(item["title"], item.get("desc", ""), item["link"], img,
-                item.get("youtube_url"), item["_game"])
-            if msg_id:
-                posted_msgs = state.setdefault("posted_msgs", {})
-                posted_msgs[str(msg_id)] = {"title": item["title"], "game": item["_game"] or "",
-                    "time": time.time(), "source": item.get("source", "watched")}
-                ch = item.get("content_hash")
-                if ch:
-                    state.setdefault("content_hashes", {})[str(ch)] = time.time()
-                ids[item["id"]] = {"time": time.time()}
-                posted += 1
-                state["last_posted_themes"] = (state.get("last_posted_themes", []) + [theme])[-3:]
-                try:
-                    tg("sendMessage", json={"chat_id": ADMIN_CHAT_ID,
-                        "text": f"\U0001F4E6 <b>Авто-пост:</b> {escape_html(item['_game'] or item['title'][:30])}",
-                        "parse_mode": "HTML"}, timeout=8)
-                except Exception as e:
-                    print(f"  Auto-post notify err: {e}")
-            break
     return posted
 
 
@@ -289,7 +283,7 @@ def force_moderation(count=3):
         if best["id"] in pending_ids:
             print(f"  Already pending: {best['title'][:40]}")
             continue
-        if _send_moderation_preview(best, pending, pending_ids):
+        if _send_moderation_preview(best, pending, pending_ids, state):
             print(f"  Moderation #{sent+1}: {best['title'][:50]}")
             sent += 1
 

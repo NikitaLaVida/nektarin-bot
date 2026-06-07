@@ -147,6 +147,10 @@ def _fetch_and_score(state, ids):
 def _run_weekly_tasks(state, now_wday, now_h):
     if now_wday != 6 or now_h != 12:
         return 0
+    today = time.strftime("%Y-%m-%d")
+    if state.get("last_weekly_tasks_date") == today:
+        print(f"  Weekly tasks already done today ({today}), skipping")
+        return 0
     posted = 0
     try:
         if post_release_calendar():
@@ -166,6 +170,8 @@ def _run_weekly_tasks(state, now_wday, now_h):
                 posted += 1
         except Exception as e:
             print(f"  Weekly {name} err: {e}")
+    if posted:
+        state["last_weekly_tasks_date"] = today
     return posted
 
 
@@ -180,7 +186,7 @@ def _cleanup_state(state, ids):
         "last_daily_admin_stats","_bot_id","_linked_chat_id","listener_tracks",
         "last_moderation_sent","pending_moderation","moderation_offset","weekly_comments",
         "_last_security_check","feed_errors","last_weekly_poll","poll_index","last_weekly_comments",
-        "learning","last_posted_themes"}
+        "learning","last_posted_themes","last_weekly_tasks_date","llm_cache","_hourly_posted"}
     for k in list(state.keys()):
         if k not in keep:
             del state[k]
@@ -229,9 +235,8 @@ def main():
             self.console = sys.stdout
         def write(self, data):
             self.console.write(data)
-            if data.strip():
-                self.file.write(data)
-                self.file.flush()
+            self.file.write(data)
+            self.file.flush()
         def flush(self):
             self.console.flush()
             self.file.flush()
@@ -268,10 +273,11 @@ def main():
         print(f"  Daily admin stats err: {e}")
 
     _cleanup_state(state, ids)
+
     save_state(state)
 
     print(f"\nNew posts: {posted}")
-    print(f"History: {len(ids)}")
+    print(f"History: {len(state.get('ids', {}))}")
     global _LAST_RUN_TIME
     _LAST_RUN_TIME = time.time()
 
